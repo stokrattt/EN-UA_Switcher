@@ -1,0 +1,207 @@
+﻿<Window x:Class="Switcher.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="Switcher — Settings"
+        Width="520" Height="560"
+        ResizeMode="CanMinimize"
+        WindowStartupLocation="CenterScreen"
+        Style="{StaticResource DarkWindowStyle}">
+
+    <DockPanel Margin="0">
+
+        <!-- Status bar at top -->
+        <Border DockPanel.Dock="Top"
+                Background="{StaticResource SurfaceBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="0,0,0,1"
+                Padding="14,8">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <Ellipse x:Name="StatusDot" Style="{StaticResource StatusDotGreen}" />
+                <TextBlock x:Name="StatusText" Text="Engine running — Safe mode only"
+                           VerticalAlignment="Center" />
+            </StackPanel>
+        </Border>
+
+        <!-- Bottom buttons -->
+        <Border DockPanel.Dock="Bottom"
+                Background="{StaticResource SurfaceBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="0,1,0,0"
+                Padding="14,10">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="View Diagnostics" Style="{StaticResource SecondaryButtonStyle}"
+                        Margin="0,0,8,0" Click="BtnDiagnostics_Click" />
+                <Button Content="Cancel" Style="{StaticResource SecondaryButtonStyle}"
+                        Margin="0,0,8,0" Click="BtnCancel_Click" />
+                <Button Content="Save" Click="BtnSave_Click" />
+            </StackPanel>
+        </Border>
+
+        <!-- Main content with tabs -->
+        <TabControl Margin="0" Padding="0"
+                    Background="{StaticResource BackgroundBrush}"
+                    BorderThickness="0">
+
+            <!-- General tab -->
+            <TabItem Header="General">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="16">
+
+                        <TextBlock Text="MODES" Style="{StaticResource SectionHeaderStyle}" />
+                        <CheckBox x:Name="ChkAutoMode"
+                                  Content="Enable Auto Mode (correct on word delimiter)"
+                                  ToolTip="When enabled, words are automatically corrected after typing a space or delimiter." />
+                        <TextBlock Style="{StaticResource MutedTextStyle}" Margin="20,0,0,8"
+                                   Text="Auto mode is conservative. Unknown words are not converted." />
+
+                        <CheckBox x:Name="ChkStrictAuto"
+                                  Content="Strict Auto Mode (higher confidence threshold)"
+                                  ToolTip="Use a stricter threshold for auto corrections — fewer false positives." />
+
+                        <Separator />
+
+                        <TextBlock Text="DELIMITER KEYS" Style="{StaticResource SectionHeaderStyle}" />
+                        <TextBlock Style="{StaticResource MutedTextStyle}" Margin="0,0,0,8"
+                                   Text="Choose which keys trigger auto-correction after a word." />
+                        <CheckBox x:Name="ChkCorrectOnSpace"
+                                  Content="Correct on Space"
+                                  ToolTip="Trigger auto-correction when Space is pressed." />
+                        <CheckBox x:Name="ChkCorrectOnEnter"
+                                  Content="Correct on Enter"
+                                  ToolTip="Trigger auto-correction when Enter is pressed." />
+                        <CheckBox x:Name="ChkCorrectOnTab"
+                                  Content="Correct on Tab"
+                                  ToolTip="Trigger auto-correction when Tab is pressed." />
+
+                        <Separator />
+
+                        <TextBlock Text="CANCEL KEYS" Style="{StaticResource SectionHeaderStyle}" />
+                        <TextBlock Style="{StaticResource MutedTextStyle}" Margin="0,0,0,8"
+                                   Text="Keys that cancel the current word and prevent auto-correction." />
+                        <CheckBox x:Name="ChkCancelOnBackspace"
+                                  Content="Cancel on Backspace"
+                                  ToolTip="Pressing Backspace clears the word buffer — no correction will happen." />
+                        <CheckBox x:Name="ChkCancelOnLeftArrow"
+                                  Content="Cancel on Left Arrow"
+                                  ToolTip="Pressing Left Arrow clears the word buffer — no correction will happen." />
+
+                        <Separator />
+
+                        <TextBlock Text="UNDO" Style="{StaticResource SectionHeaderStyle}" />
+                        <CheckBox x:Name="ChkUndoOnBackspace"
+                                  Content="Undo correction on Backspace"
+                                  ToolTip="Press Backspace immediately after an auto-correction to revert it." />
+
+                        <Separator />
+
+                        <TextBlock Text="STARTUP" Style="{StaticResource SectionHeaderStyle}" />
+                        <CheckBox x:Name="ChkStartMinimized"
+                                  Content="Start minimized to system tray" />
+
+                        <Separator />
+
+                        <TextBlock Text="DIAGNOSTICS" Style="{StaticResource SectionHeaderStyle}" />
+                        <CheckBox x:Name="ChkDiagnostics"
+                                  Content="Enable diagnostics logging" />
+                        <TextBlock Style="{StaticResource MutedTextStyle}" Margin="20,0,0,8"
+                                   Text="Logs each correction attempt. Does not record full field contents." />
+
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- Hotkeys tab -->
+            <TabItem Header="Hotkeys">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="16">
+                        <TextBlock Text="SAFE MODE HOTKEYS" Style="{StaticResource SectionHeaderStyle}" />
+                        <TextBlock Style="{StaticResource MutedTextStyle}" Margin="0,0,0,10"
+                                   Text="These hotkeys trigger safe-mode corrections on the current focused text field." />
+
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="180" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Fix last word:" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtLastWordHotkey" IsReadOnly="True"
+                                     Cursor="Arrow" />
+                        </Grid>
+
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="180" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Fix selected text:" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtSelectionHotkey" IsReadOnly="True"
+                                     Cursor="Arrow" />
+                        </Grid>
+
+                        <TextBlock Style="{StaticResource MutedTextStyle}" Margin="0,8,0,0"
+                                   Text="Hotkey editing is not yet supported in this build. Default: Ctrl+Shift+K / Ctrl+Shift+L." />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- Exclusions tab -->
+            <TabItem Header="Exclusions">
+                <Grid Margin="16">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Text="EXCLUDED PROCESSES" Style="{StaticResource SectionHeaderStyle}" />
+                    <TextBlock Grid.Row="1" Style="{StaticResource MutedTextStyle}" Margin="0,0,0,8"
+                               Text="Switcher will not act in these processes. Enter the process name (without .exe)." />
+
+                    <ListBox Grid.Row="2" x:Name="LstExclusions" Margin="0,0,0,8" />
+
+                    <StackPanel Grid.Row="3" Orientation="Horizontal">
+                        <TextBox x:Name="TxtNewExclusion" Width="220" Margin="0,0,8,0"
+                                 ToolTip="e.g. chrome, notepad, code" />
+                        <Button Content="Add" Click="BtnAddExclusion_Click" Margin="0,0,6,0" />
+                        <Button Content="Remove" Style="{StaticResource SecondaryButtonStyle}"
+                                Click="BtnRemoveExclusion_Click" />
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+
+            <!-- About tab -->
+            <TabItem Header="About">
+                <StackPanel Margin="16">
+                    <TextBlock Text="Switcher" FontSize="18" FontWeight="Bold" Margin="0,0,0,4" />
+                    <TextBlock Text="EN / UA Keyboard Layout Corrector" Style="{StaticResource MutedTextStyle}" Margin="0,0,0,16" />
+
+                    <TextBlock TextWrapping="Wrap" Margin="0,0,0,8"
+                               Text="Switcher detects text typed in the wrong keyboard layout (English ↔ Ukrainian) and corrects it." />
+
+                    <TextBlock Text="SUPPORTED TARGETS" Style="{StaticResource SectionHeaderStyle}" />
+                    <TextBlock TextWrapping="Wrap" Margin="0,0,0,4"
+                               Text="✓ Notepad, WordPad and other classic Win32 EDIT/RichEdit controls (native adapter)" />
+                    <TextBlock TextWrapping="Wrap" Margin="0,0,0,4"
+                               Text="~ Browser inputs/textareas — may work via UI Automation ValuePattern (Chrome, Edge)" />
+                    <TextBlock TextWrapping="Wrap" Margin="0,0,0,4" Foreground="{StaticResource WarningBrush}"
+                               Text="✗ contenteditable, Monaco Editor, CodeMirror, Electron apps — unsupported. Will not mutate text." />
+
+                    <TextBlock Text="SAFE MODE" Style="{StaticResource SectionHeaderStyle}" />
+                    <TextBlock TextWrapping="Wrap" Margin="0,0,0,4"
+                               Text="Ctrl+Shift+K — fix last word before caret" />
+                    <TextBlock TextWrapping="Wrap" Margin="0,0,0,4"
+                               Text="Ctrl+Shift+L — fix selected text" />
+
+                    <TextBlock Text="VERSION" Style="{StaticResource SectionHeaderStyle}" />
+                    <TextBlock Text="1.0.0 — build 9-Apr-2026" Style="{StaticResource MutedTextStyle}" />
+                </StackPanel>
+            </TabItem>
+
+        </TabControl>
+    </DockPanel>
+</Window>
+

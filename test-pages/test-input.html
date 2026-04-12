@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Switcher — Browser Test Page</title>
+<style>
+  body {
+    background: #1e1e1e;
+    color: #e0e0e0;
+    font-family: 'Segoe UI', sans-serif;
+    padding: 24px;
+    max-width: 760px;
+    margin: 0 auto;
+  }
+  h1 { color: #0078d4; font-size: 20px; margin-bottom: 4px; }
+  h2 { color: #0078d4; font-size: 14px; margin: 20px 0 8px; text-transform: uppercase; letter-spacing: .06em; }
+  p, li { color: #bbb; font-size: 13px; line-height: 1.6; }
+  .field-group { margin-bottom: 16px; }
+  label { display: block; color: #999; font-size: 12px; margin-bottom: 4px; }
+  input[type=text], textarea {
+    width: 100%;
+    background: #2d2d30;
+    color: #e0e0e0;
+    border: 1px solid #555;
+    border-radius: 3px;
+    padding: 6px 10px;
+    font-size: 14px;
+    font-family: 'Segoe UI', sans-serif;
+    box-sizing: border-box;
+    outline: none;
+  }
+  input[type=text]:focus, textarea:focus { border-color: #0078d4; }
+  textarea { height: 80px; resize: vertical; }
+  .contenteditable {
+    width: 100%;
+    min-height: 80px;
+    background: #2d2d30;
+    color: #e0e0e0;
+    border: 1px solid #555;
+    border-radius: 3px;
+    padding: 6px 10px;
+    font-size: 14px;
+    box-sizing: border-box;
+    outline: none;
+  }
+  .contenteditable:focus { border-color: #0078d4; }
+  .note {
+    background: #2d2d30;
+    border-left: 3px solid #0078d4;
+    padding: 8px 12px;
+    border-radius: 0 3px 3px 0;
+    font-size: 12px;
+    color: #999;
+    margin: 8px 0;
+  }
+  .warn {
+    border-left-color: #ffa726;
+    color: #ffa726;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  th { background: #3f3f46; color: #e0e0e0; padding: 6px 10px; text-align: left; }
+  td { padding: 5px 10px; border-bottom: 1px solid #3f3f46; color: #ccc; }
+  code { background: #3f3f46; padding: 2px 5px; border-radius: 2px; font-family: Consolas, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<h1>Switcher — Browser Input Test Page</h1>
+<p>Use this page to test Switcher's UI Automation adapter with browser inputs.
+   Launch Switcher.App first, then test each field below.</p>
+
+<div class="note">
+  <strong>Hotkeys:</strong>
+  Ctrl+Shift+K = fix last word &nbsp;|&nbsp;
+  Ctrl+Shift+L = fix selected text
+</div>
+
+<!-- ─── Input (type=text) ─────────────────────────────────────────────────── -->
+<h2>1. Input (type="text")</h2>
+<div class="note">
+  Expected adapter: UIAutomationTargetAdapter (ValuePattern).
+  Should support safe last word and auto mode.
+</div>
+<div class="field-group">
+  <label>Type test words here, then press Ctrl+Shift+K:</label>
+  <input type="text" id="inp1" placeholder="e.g. ghbdsn → should become привіт" />
+</div>
+
+<strong style="font-size:12px;color:#999">Test cases:</strong>
+<table>
+  <tr><th>Input</th><th>Expected result after Ctrl+Shift+K</th></tr>
+  <tr><td><code>ghbdsn</code></td><td>привіт</td></tr>
+  <tr><td><code>руддщ</code></td><td>hello</td></tr>
+  <tr><td><code>hello</code></td><td>no change</td></tr>
+  <tr><td><code>привіт</code></td><td>no change</td></tr>
+  <tr><td><code>test</code></td><td>no change</td></tr>
+  <tr><td><code>дякую</code></td><td>no change</td></tr>
+</table>
+
+<!-- ─── Textarea ──────────────────────────────────────────────────────────── -->
+<h2>2. Textarea</h2>
+<div class="note">
+  Expected adapter: UIAutomationTargetAdapter (ValuePattern).
+  Known limitation: cursor may jump to end after replacement.
+</div>
+<div class="field-group">
+  <label>Multi-line text area — type a word and press Ctrl+Shift+K:</label>
+  <textarea id="ta1" placeholder="ghbdsn (press Ctrl+Shift+K) → привіт"></textarea>
+</div>
+
+<!-- ─── ContentEditable ───────────────────────────────────────────────────── -->
+<h2>3. ContentEditable div</h2>
+<div class="note warn">
+  ⚠ Expected result: UNSUPPORTED. Switcher should detect no writable ValuePattern,
+  log "unsupported target", and do nothing. Text must not be changed or erased.
+</div>
+<div class="field-group">
+  <label>ContentEditable — safe mode should do nothing here:</label>
+  <div class="contenteditable" contenteditable="true" id="ce1"
+       placeholder="Type here — Switcher should NOT touch this">ghbdsn test привіт</div>
+</div>
+
+<!-- ─── Instructions ─────────────────────────────────────────────────────── -->
+<h2>Test procedure</h2>
+<ol>
+  <li>Launch <code>Switcher.App.exe</code></li>
+  <li>Open this page in Chrome or Edge</li>
+  <li>Focus the <strong>input[type=text]</strong> field, type <code>ghbdsn</code></li>
+  <li>Press <code>Ctrl+Shift+K</code></li>
+  <li>Verify the text changes to <code>привіт</code></li>
+  <li>Repeat for each test case in the table</li>
+  <li>Focus the <strong>contenteditable</strong> div and press <code>Ctrl+Shift+K</code></li>
+  <li>Verify nothing changes and diagnostics show "unsupported target"</li>
+  <li>Enable auto mode in Switcher settings</li>
+  <li>Type <code>ghbdsn </code> (with space) in the input field</li>
+  <li>Verify auto-correction to <code>привіт </code></li>
+  <li>Type <code>hello </code> — verify no change</li>
+</ol>
+
+<h2>Notes</h2>
+<ul>
+  <li>Chrome requires UI Automation accessibility to be active. It activates automatically when Switcher connects via UIA client.</li>
+  <li>If UIA ValuePattern is not available on first try, wait 1 second and retry (Chrome may need a moment).</li>
+  <li><code>SetValue</code> replaces the entire field value. Cursor position may reset to end after correction. This is a known limitation of the UIA adapter.</li>
+  <li>Auto mode in browser fields is experimental. Manual safe mode (hotkeys) is more reliable.</li>
+</ul>
+
+</body>
+</html>
