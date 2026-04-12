@@ -7,6 +7,7 @@ Typed `руддщ` instead of `hello`? Switcher fixes it for you.
 ## Features
 
 ### Auto Mode
+
 - Monitors keystrokes in real time via a low-level keyboard hook
 - When you press **Space**, **Enter**, or **Tab**, the last word is evaluated
 - If the word looks like it was typed in the wrong layout, it's replaced instantly
@@ -14,12 +15,14 @@ Typed `руддщ` instead of `hello`? Switcher fixes it for you.
 - Strict mode option for higher-confidence corrections only
 
 ### Safe Mode (Manual Hotkeys)
-| Hotkey | Action |
-|--------|--------|
+
+| Hotkey           | Action                                 |
+| ---------------- | -------------------------------------- |
 | **Ctrl+Shift+K** | Correct the last word before the caret |
-| **Ctrl+Shift+L** | Correct the selected text |
+| **Ctrl+Shift+L** | Correct the selected text              |
 
 ### Other
+
 - System tray icon with quick access to settings, diagnostics, and mode toggle
 - Per-process exclusion list (skip correction in specific apps)
 - Undo last correction with Backspace
@@ -30,18 +33,25 @@ Typed `руддщ` instead of `hello`? Switcher fixes it for you.
 
 ## Supported Targets
 
-| Target | Status |
-|--------|--------|
-| Notepad, WordPad, classic Win32 EDIT/RichEdit | ✅ Fully supported |
-| Browser text inputs (Chrome, Edge) via UI Automation | ⚠️ Partial (clipboard fallback for auto mode) |
-| contenteditable, Monaco, CodeMirror, Electron apps | ❌ Not supported |
+| Target                                               | Status                                        |
+| ---------------------------------------------------- | --------------------------------------------- |
+| Notepad, WordPad, classic Win32 EDIT/RichEdit        | ✅ Fully supported (both modes)               |
+| Electron apps (Telegram, VS Code, Slack, etc.)       | ✅ Safe mode works, Auto mode works via SendInput |
+| Browser text inputs (Chrome, Edge)                   | ⚠️ Safe mode works; Auto mode uses clipboard fallback (Chrome sends fake scan codes) |
+| contenteditable, Monaco, CodeMirror (in browsers)    | ⚠️ Safe mode works; Auto mode experimental    |
 
 ## Requirements
 
 - Windows 10/11
-- .NET 8.0 Desktop Runtime
 
-## Build & Run
+## Download & Run
+
+Go to [Releases](https://github.com/stokrattt/KyboardSwitcher_EN_UA/releases) and download:
+
+- **`Switcher.App.exe`** (self-contained, ~155 MB) — works without installing anything, just double-click
+- **`Switcher.App-small.exe`** (~300 KB) — requires [.NET 8.0 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) installed
+
+## Build from Source
 
 ```bash
 dotnet build Switcher.sln
@@ -66,18 +76,18 @@ tests/
 
 All settings are configurable from the Settings window (double-click tray icon):
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| Auto Mode | Off | Enable automatic correction on word boundaries |
-| Strict Auto Mode | On | Require higher confidence for auto corrections |
-| Correct on Space | On | Trigger auto correction when Space is pressed |
-| Correct on Enter | On | Trigger auto correction when Enter is pressed |
-| Correct on Tab | Off | Trigger auto correction when Tab is pressed |
-| Cancel on Backspace | On | Cancel pending correction when Backspace is pressed |
-| Cancel on Left Arrow | On | Cancel pending correction when Left Arrow is pressed |
-| Undo on Backspace | On | Undo last correction with Backspace immediately after |
-| Start Minimized | On | Start the app minimized to the system tray |
-| Diagnostics | On | Log correction events to the diagnostics window |
+| Setting              | Default | Description                                           |
+| -------------------- | ------- | ----------------------------------------------------- |
+| Auto Mode            | Off     | Enable automatic correction on word boundaries        |
+| Strict Auto Mode     | On      | Require higher confidence for auto corrections        |
+| Correct on Space     | On      | Trigger auto correction when Space is pressed         |
+| Correct on Enter     | On      | Trigger auto correction when Enter is pressed         |
+| Correct on Tab       | Off     | Trigger auto correction when Tab is pressed           |
+| Cancel on Backspace  | On      | Cancel pending correction when Backspace is pressed   |
+| Cancel on Left Arrow | On      | Cancel pending correction when Left Arrow is pressed  |
+| Undo on Backspace    | On      | Undo last correction with Backspace immediately after |
+| Start Minimized      | On      | Start the app minimized to the system tray            |
+| Diagnostics          | On      | Log correction events to the diagnostics window       |
 
 ## How It Works
 
