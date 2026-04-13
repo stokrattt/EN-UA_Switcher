@@ -213,6 +213,29 @@ public class KeyboardObserverBufferTests
     }
 
     [Fact]
+    public void GetVisibleWordNearCaret_PreservesShiftedTrailingPunctuation()
+    {
+        var observer = new KeyboardObserver();
+        var scanBufferField = typeof(KeyboardObserver).GetField("_scanBuffer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var lastLayoutField = typeof(KeyboardObserver).GetField("<LastLayoutWasUkrainian>k__BackingField", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+
+        scanBufferField.SetValue(observer, new List<(uint scan, uint rawScan, uint vk, bool shift, uint flags)>
+        {
+            (0x22, 0x22, 0x47, false, 0), // g
+            (0x23, 0x23, 0x48, false, 0), // h
+            (0x30, 0x30, 0x42, false, 0), // b
+            (0x20, 0x20, 0x44, false, 0), // d
+            (0x1F, 0x1F, 0x53, false, 0), // s
+            (0x31, 0x31, 0x4E, false, 0), // n
+            (0x35, 0x35, 0xBF, true, 0),  // ? / comma on UA
+        });
+
+        lastLayoutField.SetValue(observer, true);
+
+        Assert.Equal("привіт,", observer.GetVisibleWordNearCaret());
+    }
+
+    [Fact]
     public void CurrentWord_InitiallyEmpty()
     {
         var obs = new KeyboardObserver();

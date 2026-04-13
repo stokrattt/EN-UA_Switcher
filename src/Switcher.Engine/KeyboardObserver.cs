@@ -56,6 +56,7 @@ public class KeyboardObserver : IDisposable
     private readonly List<(uint scan, uint rawScan, uint vk, bool shift, uint flags)> _scanBuffer = new();
     private string _lastWordEN = "";
     private string _lastWordUA = "";
+    private string _lastVisibleWord = "";
     private string _lastVkDebug = "";
     private int _scanRecoveryCount;
     private int _droppedKeySinceDelimiter;
@@ -109,6 +110,8 @@ public class KeyboardObserver : IDisposable
     public string CurrentWordEN => _lastWordEN;
     /// <summary>UA interpretation of the last completed word.</summary>
     public string CurrentWordUA => _lastWordUA;
+    /// <summary>Best-effort exact visible word from the active keyboard layout.</summary>
+    public string CurrentVisibleWord => _lastVisibleWord;
     /// <summary>Backward-compatible: returns the EN interpretation.</summary>
     public string CurrentWord => _lastWordEN;
     /// <summary>Debug string of raw VK codes (hex) for diagnostics.</summary>
@@ -145,6 +148,7 @@ public class KeyboardObserver : IDisposable
     {
         _lastWordEN = "";
         _lastWordUA = "";
+        _lastVisibleWord = "";
         _lastVkDebug = "";
     }
 
@@ -158,7 +162,9 @@ public class KeyboardObserver : IDisposable
         if (!string.IsNullOrEmpty(buffered))
             return buffered;
 
-        return LastLayoutWasUkrainian ? _lastWordUA : _lastWordEN;
+        return !string.IsNullOrEmpty(_lastVisibleWord)
+            ? _lastVisibleWord
+            : (LastLayoutWasUkrainian ? _lastWordUA : _lastWordEN);
     }
 
     private string GetVisibleBufferedWord(ForegroundContext? context)
@@ -210,6 +216,7 @@ public class KeyboardObserver : IDisposable
         _droppedKeySinceDelimiter = 0;
         _lastWordEN = "";
         _lastWordUA = "";
+        _lastVisibleWord = "";
         _lastVkDebug = "";
     }
 
@@ -334,6 +341,9 @@ public class KeyboardObserver : IDisposable
                     _keysSinceDelimiter = 0;
                     _lastWordEN = PickBestEN(_scanBuffer);
                     _lastWordUA = PickBestUA(_scanBuffer);
+                    _lastVisibleWord = fgThread != 0
+                        ? BufferToVisible(_scanBuffer, NativeMethods.GetKeyboardLayout(fgThread))
+                        : string.Empty;
                     _lastVkDebug = ScanBufferToDebug(_scanBuffer);
                     LastScanRecoveryCount = _scanRecoveryCount;
                     LastDroppedKeyCount = _droppedKeySinceDelimiter;
@@ -651,18 +661,15 @@ public class KeyboardObserver : IDisposable
         // map to any UA letter).
         bool vkAllLetters = vkEN.Length > 0 && vkEN.All(char.IsLetter);
         bool scanHasGarbage = scanEN.Length > 0 && scanEN.Any(c =>
-            !char.IsLetter(c) && !KeyboardMappedChars.Contains(c));
+            !char.IsLetter(c)
+            && !KeyboardLayoutMap.IsLayoutLetterChar(c)
+            && !KeyboardLayoutMap.IsWordConnector(c));
         if (vkAllLetters && scanHasGarbage)
             return vkEN;
 
         // Default: prefer scan codes (they're layout-independent)
         return scanEN;
     }
-
-    // Characters that are not letters but map to UA letters on ЙЦУКЕН layout.
-    // These must be preserved in scan interpretation, not treated as "garbage".
-    private static readonly HashSet<char> KeyboardMappedChars = new()
-        { '[', ']', '{', '}', '\\', '|', '.', ',', ';', ':', '<', '>', '\'', '"', '`', '~' };
 
     /// <summary>Picks the best UA interpretation based on the best EN.</summary>
     private static string PickBestUA(List<(uint scan, uint rawScan, uint vk, bool shift, uint flags)> buffer)
@@ -687,6 +694,39 @@ public class KeyboardObserver : IDisposable
         return parts.ToString();
     }
 
+    private static string BufferToVisible(List<(uint scan, uint rawScan, uint vk, bool shift, uint flags)> buffer, IntPtr hkl)
+    {
+        if (buffer.Count == 0 || hkl == IntPtr.Zero)
+            return string.Empty;
+
+        var output = new StringBuilder(buffer.Count);
+
+        foreach (var (scan, rawScan, vk, shift, flags) in buffer)
+        {
+            var keyState = new byte[256];
+            if (shift)
+                keyState[NativeMethods.VK_SHIFT] = 0x80;
+
+            uint unicodeScan = rawScan != 0 ? rawScan : scan;
+            if ((flags & 0x01) != 0)
+                unicodeScan |= 0xE000;
+
+            var chars = new StringBuilder(8);
+            int rc = NativeMethods.ToUnicodeEx(vk, unicodeScan, keyState, chars, chars.Capacity, 0, hkl);
+            if (rc > 0)
+            {
+                output.Append(chars.ToString(0, rc));
+                continue;
+            }
+
+            char fallback = ScanToEN(scan, shift);
+            if (fallback != '\0')
+                output.Append(fallback);
+        }
+
+        return output.ToString();
+    }
+
     public void ResetBuffer()
     {
         _keysSinceDelimiter = 0;
@@ -695,6 +735,7 @@ public class KeyboardObserver : IDisposable
         _droppedKeySinceDelimiter = 0;
         _lastWordEN = "";
         _lastWordUA = "";
+        _lastVisibleWord = "";
         _lastVkDebug = "";
     }
 

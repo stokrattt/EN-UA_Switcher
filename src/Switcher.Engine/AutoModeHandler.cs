@@ -70,7 +70,13 @@ public class AutoModeHandler
         int seqScans = _observer.LastSequentialScanCount;
         string vkEN = _observer.CurrentWordEN_VkOnly;
         string vkUA = _observer.CurrentWordUA_VkOnly;
+        string visibleWord = _observer.CurrentVisibleWord;
         string layoutTag = _observer.LastLayoutWasUkrainian ? "UA" : "EN";
+        string visibleTrailingSuffix = ResolveVisibleTrailingPunctuation(visibleWord, layoutTag == "UA" ? wordUA : wordEN, layoutTag == "UA" ? wordEN : wordUA);
+        string analysisWordEN = StripVisibleSuffixFromInterpretation(wordEN, visibleTrailingSuffix);
+        string analysisWordUA = StripVisibleSuffixFromInterpretation(wordUA, visibleTrailingSuffix);
+        string analysisVkEN = StripVisibleSuffixFromInterpretation(vkEN, visibleTrailingSuffix);
+        string analysisVkUA = StripVisibleSuffixFromInterpretation(vkUA, visibleTrailingSuffix);
 
         // Chrome sends COMPLETELY FAKE scan AND VK codes (sequential counters).
         // When ≥3 adjacent scans are sequential, both scan and VK data is garbage —
@@ -89,7 +95,7 @@ public class AutoModeHandler
         string proc = context?.ProcessName ?? "?";
         string cls = context?.FocusedControlClass ?? "?";
 
-        if (approxWordLength < 2 || (wordEN.Length < 2 && wordUA.Length < 2))
+        if (approxWordLength < 2 || (analysisWordEN.Length < 2 && analysisWordUA.Length < 2))
         {
             // If we have enough keys but buffer decoding failed (garbage scan/VK codes),
             // fall back to clipboard-based word reading. This handles Chrome which
@@ -132,7 +138,7 @@ public class AutoModeHandler
             return;
         }
 
-        if (IsExcludedAutoWord(wordEN, wordUA, vkEN, vkUA))
+        if (IsExcludedAutoWord(wordEN, wordUA, vkEN, vkUA, analysisWordEN, analysisWordUA, analysisVkEN, analysisVkUA))
         {
             _diagnostics.Log(proc, cls, "SendInput", false, OperationType.AutoMode, originalDisplay, null,
                 DiagnosticResult.Skipped, $"Word is excluded from Auto Mode {techDetail}");
@@ -180,16 +186,20 @@ public class AutoModeHandler
         CorrectionCandidate? candidate = null;
 
         // 1a) EN→UA (e.g. "ghbdsn" → привіт): require converted text in UA dictionary
-        if (wordEN.Length >= 2)
+        if (analysisWordEN.Length >= 2)
         {
-            var c = CorrectionHeuristics.Evaluate(wordEN, CorrectionMode.Auto);
+            var c = CorrectionHeuristics.Evaluate(analysisWordEN, CorrectionMode.Auto);
             if (c != null)
-                candidate = c;
+                candidate = ApplyVisibleTrailingPunctuation(c, visibleTrailingSuffix);
         }
 
         // 1b) UA→EN (e.g. "руддщ" → hello): normal threshold, no extra dictionary gate
-        if (candidate == null && wordUA.Length >= 2)
-            candidate = CorrectionHeuristics.Evaluate(wordUA, CorrectionMode.Auto);
+        if (candidate == null && analysisWordUA.Length >= 2)
+        {
+            var c = CorrectionHeuristics.Evaluate(analysisWordUA, CorrectionMode.Auto);
+            if (c != null)
+                candidate = ApplyVisibleTrailingPunctuation(c, visibleTrailingSuffix);
+        }
 
         if (candidate != null)
         {
@@ -204,16 +214,20 @@ public class AutoModeHandler
                 originalDisplay, null, DiagnosticResult.Skipped,
                 $"L1 no match → trying L2 VK-only {techDetail} [{rawDebug}]");
 
-            if (vkEN != wordEN || vkUA != wordUA)
+            if (analysisVkEN != analysisWordEN || analysisVkUA != analysisWordUA)
             {
-                if (vkEN.Length >= 2)
+                if (analysisVkEN.Length >= 2)
                 {
-                    var c = CorrectionHeuristics.Evaluate(vkEN, CorrectionMode.Auto);
+                    var c = CorrectionHeuristics.Evaluate(analysisVkEN, CorrectionMode.Auto);
                     if (c != null)
-                        candidate = c;
+                        candidate = ApplyVisibleTrailingPunctuation(c, visibleTrailingSuffix);
                 }
-                if (candidate == null && vkUA.Length >= 2)
-                    candidate = CorrectionHeuristics.Evaluate(vkUA, CorrectionMode.Auto);
+                if (candidate == null && analysisVkUA.Length >= 2)
+                {
+                    var c = CorrectionHeuristics.Evaluate(analysisVkUA, CorrectionMode.Auto);
+                    if (c != null)
+                        candidate = ApplyVisibleTrailingPunctuation(c, visibleTrailingSuffix);
+                }
             }
 
             if (candidate == null)
@@ -252,32 +266,18 @@ public class AutoModeHandler
         uint delimVk = _observer.LastDelimiterVk;
         _observer.SuppressCurrentDelimiter();
 
-        // Backspace count = length of the matched interpretation's original text
-        // (which equals approxWordLength for well-formed input)
-        int backspaceCount = approxWordLength;
         string replacement = candidate.ConvertedText;
         var direction = candidate.Direction;
         string reason = candidate.Reason;
         string original = candidate.OriginalText;
+        string replacementCore = TrimLiteralTrailingSuffix(replacement, visibleTrailingSuffix);
+        string originalCore = TrimLiteralTrailingSuffix(original, visibleTrailingSuffix);
 
         Task.Run(() =>
         {
             try
             {
-                // SendInput: Backspace×N to erase the original, then type the replacement
-                var inputs = new NativeMethods.INPUT[backspaceCount * 2 + replacement.Length * 2];
-                int idx = 0;
-
-                for (int i = 0; i < backspaceCount; i++)
-                {
-                    inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: false);
-                    inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: true);
-                }
-                foreach (char c in replacement)
-                {
-                    inputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: false);
-                    inputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: true);
-                }
+                var inputs = BuildAutoReplacementInputs(originalCore, replacementCore, visibleTrailingSuffix);
 
                 uint sent = NativeMethods.SendInput((uint)inputs.Length, inputs,
                     Marshal.SizeOf<NativeMethods.INPUT>());
@@ -422,7 +422,13 @@ public class AutoModeHandler
                 return;
             }
 
-            var candidate = CorrectionHeuristics.Evaluate(trimmed, CorrectionMode.Auto);
+            string visibleSuffix = ExtractLiteralTrailingPunctuation(trimmed);
+            string analysis = TrimTrailingChars(trimmed, visibleSuffix.Length);
+            var candidate = string.IsNullOrWhiteSpace(analysis)
+                ? null
+                : CorrectionHeuristics.Evaluate(analysis, CorrectionMode.Auto);
+            if (candidate != null)
+                candidate = ApplyVisibleTrailingPunctuation(candidate, visibleSuffix);
 
             if (candidate == null)
             {
@@ -506,7 +512,13 @@ public class AutoModeHandler
             if (_exclusions.IsWordExcluded(actualWord))
                 return false;
 
-            var candidate = CorrectionHeuristics.Evaluate(actualWord, CorrectionMode.Auto);
+            string visibleSuffix = ExtractLiteralTrailingPunctuation(actualWord);
+            string analysis = TrimTrailingChars(actualWord, visibleSuffix.Length);
+            var candidate = string.IsNullOrWhiteSpace(analysis)
+                ? null
+                : CorrectionHeuristics.Evaluate(analysis, CorrectionMode.Auto);
+            if (candidate != null)
+                candidate = ApplyVisibleTrailingPunctuation(candidate, visibleSuffix);
 
             if (candidate == null)
                 return false;
@@ -654,4 +666,137 @@ public class AutoModeHandler
 
         return false;
     }
+
+    private static CorrectionCandidate ApplyVisibleTrailingPunctuation(CorrectionCandidate candidate, string visibleSuffix)
+    {
+        if (string.IsNullOrEmpty(visibleSuffix))
+            return candidate;
+
+        string original = candidate.OriginalText;
+        if (!original.EndsWith(visibleSuffix, StringComparison.Ordinal))
+            original += visibleSuffix;
+
+        string converted = candidate.ConvertedText;
+        if (!converted.EndsWith(visibleSuffix, StringComparison.Ordinal))
+        {
+            string toggledSuffix = KeyboardLayoutMap.ToggleLayoutText(visibleSuffix, out int changedCount);
+            if (changedCount > 0 && converted.EndsWith(toggledSuffix, StringComparison.Ordinal))
+                converted = converted[..^toggledSuffix.Length] + visibleSuffix;
+            else
+                converted += visibleSuffix;
+        }
+
+        if (original == candidate.OriginalText && converted == candidate.ConvertedText)
+            return candidate;
+
+        return candidate with
+        {
+            OriginalText = original,
+            ConvertedText = converted,
+            Reason = $"{candidate.Reason} + preserved trailing punctuation"
+        };
+    }
+
+    private static string ExtractLiteralTrailingPunctuation(string visibleWord)
+    {
+        if (string.IsNullOrEmpty(visibleWord) || visibleWord.Length < 2)
+            return string.Empty;
+
+        int start = visibleWord.Length;
+        while (start > 0 && IsLiteralTrailingPunctuation(visibleWord[start - 1]))
+            start--;
+
+        if (start == visibleWord.Length || start == 0)
+            return string.Empty;
+
+        return char.IsLetterOrDigit(visibleWord[start - 1])
+            ? visibleWord[start..]
+            : string.Empty;
+    }
+
+    private static string ResolveVisibleTrailingPunctuation(params string[] visibleWords)
+    {
+        foreach (string visibleWord in visibleWords)
+        {
+            string suffix = ExtractLiteralTrailingPunctuation(visibleWord);
+            if (!string.IsNullOrEmpty(suffix))
+                return suffix;
+        }
+
+        return string.Empty;
+    }
+
+    private static string TrimTrailingChars(string text, int count)
+    {
+        if (count <= 0 || string.IsNullOrEmpty(text))
+            return text;
+
+        return text.Length > count ? text[..^count] : string.Empty;
+    }
+
+    private static string TrimLiteralTrailingSuffix(string text, string suffix)
+    {
+        if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(suffix))
+            return text;
+
+        return text.EndsWith(suffix, StringComparison.Ordinal)
+            ? text[..^suffix.Length]
+            : text;
+    }
+
+    private static string StripVisibleSuffixFromInterpretation(string text, string visibleSuffix)
+    {
+        if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(visibleSuffix))
+            return text;
+
+        if (text.EndsWith(visibleSuffix, StringComparison.Ordinal))
+            return text[..^visibleSuffix.Length];
+
+        string toggledSuffix = KeyboardLayoutMap.ToggleLayoutText(visibleSuffix, out int changedCount);
+        if (changedCount > 0 && text.EndsWith(toggledSuffix, StringComparison.Ordinal))
+            return text[..^toggledSuffix.Length];
+
+        return text;
+    }
+
+    private static NativeMethods.INPUT[] BuildAutoReplacementInputs(string originalCore, string replacementCore, string trailingSuffix)
+    {
+        var modifierRelease = NativeMethods.BuildModifierReleaseInputs();
+        int suffixLen = trailingSuffix.Length;
+        int totalInputs = modifierRelease.Length + (suffixLen * 2) + (originalCore.Length * 2) + (replacementCore.Length * 2) + (suffixLen * 2);
+        var inputs = new NativeMethods.INPUT[totalInputs];
+        int idx = 0;
+
+        foreach (var input in modifierRelease)
+            inputs[idx++] = input;
+
+        for (int i = 0; i < suffixLen; i++)
+        {
+            inputs[idx++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: false);
+            inputs[idx++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: true);
+        }
+
+        for (int i = 0; i < originalCore.Length; i++)
+        {
+            inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: false);
+            inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: true);
+        }
+
+        foreach (char c in replacementCore)
+        {
+            inputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: false);
+            inputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: true);
+        }
+
+        for (int i = 0; i < suffixLen; i++)
+        {
+            inputs[idx++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_RIGHT, keyUp: false);
+            inputs[idx++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_RIGHT, keyUp: true);
+        }
+
+        return inputs;
+    }
+
+    private static bool IsLiteralTrailingPunctuation(char c) =>
+        char.IsPunctuation(c) && !KeyboardLayoutMap.IsWordConnector(c);
 }

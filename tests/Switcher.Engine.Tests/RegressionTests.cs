@@ -446,6 +446,110 @@ public class GlobalHotkeyManagerRegressionTests
     private readonly record struct PostThreadMessageCall(uint ThreadId, int Message, IntPtr WParam, IntPtr LParam);
 }
 
+public class AutoModeHandlerPunctuationRegressionTests
+{
+    [Theory]
+    [InlineData(",")]
+    [InlineData(".")]
+    [InlineData(";")]
+    [InlineData("!")]
+    [InlineData("?")]
+    public void ApplyVisibleTrailingPunctuation_AppendsLiteralTrailingPunctuation_WhenCandidateDroppedIt(string suffix)
+    {
+        var candidate = new CorrectionCandidate(
+            "руддщ",
+            "hello",
+            CorrectionDirection.UaToEn,
+            0.95,
+            "test");
+
+        CorrectionCandidate normalized = InvokeApplyVisibleTrailingPunctuation(candidate, suffix);
+
+        Assert.Equal("руддщ" + suffix, normalized.OriginalText);
+        Assert.Equal("hello" + suffix, normalized.ConvertedText);
+    }
+
+    [Fact]
+    public void ApplyVisibleTrailingPunctuation_ReplacesMappedCommaLetter_WithLiteralComma()
+    {
+        var candidate = new CorrectionCandidate(
+            "ghbdsn,",
+            "привітб",
+            CorrectionDirection.EnToUa,
+            0.95,
+            "test");
+
+        CorrectionCandidate normalized = InvokeApplyVisibleTrailingPunctuation(candidate, ",");
+
+        Assert.Equal("ghbdsn,", normalized.OriginalText);
+        Assert.Equal("привіт,", normalized.ConvertedText);
+    }
+
+    private static CorrectionCandidate InvokeApplyVisibleTrailingPunctuation(CorrectionCandidate candidate, string visibleSuffix)
+    {
+        var method = typeof(AutoModeHandler)
+            .GetMethod("ApplyVisibleTrailingPunctuation", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        return (CorrectionCandidate)method.Invoke(null, [candidate, visibleSuffix])!;
+    }
+
+    [Fact]
+    public void BuildAutoReplacementInputs_ReleasesModifiersBeforeReplacingWord()
+    {
+        NativeMethods.INPUT[] inputs = InvokeBuildAutoReplacementInputs("ghbdsn", "привіт", string.Empty);
+        NativeMethods.INPUT[] release = NativeMethods.BuildModifierReleaseInputs();
+
+        Assert.True(inputs.Length > release.Length);
+        for (int i = 0; i < release.Length; i++)
+            Assert.Equal(release[i].U.ki.wVk, inputs[i].U.ki.wVk);
+        Assert.Equal(NativeMethods.VK_BACK, inputs[release.Length].U.ki.wVk);
+    }
+
+    [Fact]
+    public void BuildAutoReplacementInputs_WithTrailingPunctuation_MovesBeforeSuffixAndReturnsAfterTyping()
+    {
+        NativeMethods.INPUT[] inputs = InvokeBuildAutoReplacementInputs("ghbdsn", "привіт", "?");
+        int releaseCount = NativeMethods.BuildModifierReleaseInputs().Length;
+
+        Assert.Equal(NativeMethods.VK_LEFT, inputs[releaseCount].U.ki.wVk);
+        Assert.Equal(NativeMethods.KEYEVENTF_EXTENDEDKEY, inputs[releaseCount].U.ki.dwFlags);
+        Assert.Equal(NativeMethods.VK_LEFT, inputs[releaseCount + 1].U.ki.wVk);
+        Assert.Equal(NativeMethods.KEYEVENTF_EXTENDEDKEY | NativeMethods.KEYEVENTF_KEYUP, inputs[releaseCount + 1].U.ki.dwFlags);
+
+        NativeMethods.INPUT[] suffixInputs = inputs[^2..];
+        Assert.Equal(NativeMethods.VK_RIGHT, suffixInputs[0].U.ki.wVk);
+        Assert.Equal(NativeMethods.KEYEVENTF_EXTENDEDKEY, suffixInputs[0].U.ki.dwFlags);
+        Assert.Equal(NativeMethods.VK_RIGHT, suffixInputs[1].U.ki.wVk);
+        Assert.Equal(NativeMethods.KEYEVENTF_EXTENDEDKEY | NativeMethods.KEYEVENTF_KEYUP, suffixInputs[1].U.ki.dwFlags);
+    }
+
+    [Theory]
+    [InlineData("ghbdsn", "?", "ghbdsn")]
+    [InlineData("ghbdsn.", ".", "ghbdsn")]
+    [InlineData("привітб", ",", "привіт")]
+    public void StripVisibleSuffixFromInterpretation_RemovesOnlyMatchingVisibleOrMappedSuffix(string text, string suffix, string expected)
+    {
+        string actual = InvokeStripVisibleSuffixFromInterpretation(text, suffix);
+        Assert.Equal(expected, actual);
+    }
+
+    private static NativeMethods.INPUT[] InvokeBuildAutoReplacementInputs(string originalCore, string replacementCore, string suffix)
+    {
+        var method = typeof(AutoModeHandler)
+            .GetMethod("BuildAutoReplacementInputs", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        return (NativeMethods.INPUT[])method.Invoke(null, [originalCore, replacementCore, suffix])!;
+    }
+
+    private static string InvokeStripVisibleSuffixFromInterpretation(string text, string suffix)
+    {
+        var method = typeof(AutoModeHandler)
+            .GetMethod("StripVisibleSuffixFromInterpretation", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        return (string)method.Invoke(null, [text, suffix])!;
+    }
+}
+
 public class SafeModeHandlerRegressionTests
 {
     [Fact]

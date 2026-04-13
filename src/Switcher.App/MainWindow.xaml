@@ -377,7 +377,7 @@
                                     <TextBlock Text="BUILD" Style="{StaticResource EyebrowTextStyle}" />
                                      <TextBlock Text="Version" Style="{StaticResource SectionHeaderStyle}" />
                                      <TextBlock Style="{StaticResource MutedTextStyle}"
-                                                Text="1.1.0 — build 13-Apr-2026" />
+                                                Text="1.2.0 — build 13-Apr-2026" />
                                  </StackPanel>
                              </Border>
                         </StackPanel>
