@@ -24,8 +24,8 @@ public partial class App : System.Windows.Application
         if (!createdNew)
         {
             System.Windows.MessageBox.Show(
-                "Switcher is already running in the system tray.",
-                "Switcher",
+                "EN-UA Switcher is already running in the system tray.",
+                "EN-UA Switcher",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
             Current.Shutdown();
@@ -46,7 +46,7 @@ public partial class App : System.Windows.Application
     {
         _trayIcon = new NotifyIcon
         {
-            Text = "Switcher — EN/UA Layout Corrector",
+            Text = "EN-UA Switcher — Layout Corrector",
             Visible = true,
             Icon = TrayIconHelper.CreateIcon()
         };
@@ -120,8 +120,8 @@ public partial class App : System.Windows.Application
         bool autoEnabled = _engine.Settings.Current.AutoModeEnabled;
         bool hotkeysReady = _engine.SafeHotkeysAvailable;
         _trayIcon.Text = autoEnabled
-            ? (hotkeysReady ? "Switcher — Auto ON, hotkeys ON" : "Switcher — Auto ON, hotkeys unavailable")
-            : (hotkeysReady ? "Switcher — Auto OFF, hotkeys ON" : "Switcher — Auto OFF, hotkeys unavailable");
+            ? (hotkeysReady ? "EN-UA Switcher — Auto ON, hotkeys ON" : "EN-UA Switcher — Auto ON, hotkeys unavailable")
+            : (hotkeysReady ? "EN-UA Switcher — Auto OFF, hotkeys ON" : "EN-UA Switcher — Auto OFF, hotkeys unavailable");
     }
 
     private void ShowMainWindow()

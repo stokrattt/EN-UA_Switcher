@@ -1,8 +1,8 @@
-# Switcher
+# EN-UA Switcher
 
-Switcher is a Windows tray app for switching mistyped English/Ukrainian text.
+EN-UA Switcher is a Windows tray app for switching mistyped English/Ukrainian text.
 
-If you type `руддщ` instead of `hello`, Switcher can fix it automatically after a delimiter or manually through global hotkeys.
+If you type `руддщ` instead of `hello`, EN-UA Switcher can fix it automatically after a delimiter or manually through global hotkeys.
 
 ## What It Does
 
@@ -46,7 +46,7 @@ This path is intentionally dumb and deterministic:
 
 ## Tray Menu
 
-Switcher runs in the system tray.
+EN-UA Switcher runs in the system tray.
 
 From the tray menu you can:
 

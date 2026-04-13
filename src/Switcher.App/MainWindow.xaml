@@ -4,7 +4,7 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
-        Title="Switcher — Settings"
+        Title="EN-UA Switcher — Settings"
         Width="680"
         Height="620"
         MinWidth="620"
@@ -25,7 +25,7 @@
                 Padding="12"
                 Margin="0,0,0,10">
             <DockPanel LastChildFill="False">
-                <TextBlock Text="Switcher"
+                <TextBlock Text="EN-UA Switcher"
                            Style="{StaticResource WindowTitleStyle}"
                            VerticalAlignment="Center" />
                 <Border Style="{StaticResource PillBorderStyle}"
@@ -59,7 +59,7 @@
                                     <TextBlock Text="AUTOMATION" Style="{StaticResource EyebrowTextStyle}" />
                                     <TextBlock Text="General" Style="{StaticResource SectionHeaderStyle}" />
                                     <TextBlock Style="{StaticResource MutedTextStyle}"
-                                               Text="Choose how Switcher reacts while you type. Safe hotkeys remain available even with Auto Mode disabled."
+                                               Text="Choose how EN-UA Switcher reacts while you type. Safe hotkeys remain available even with Auto Mode disabled."
                                                Margin="0,0,0,8" />
 
                                     <CheckBox x:Name="ChkAutoMode"
@@ -330,12 +330,12 @@
                             <Border Style="{StaticResource SubtleCardBorderStyle}">
                                 <StackPanel>
                                     <TextBlock Text="PRODUCT" Style="{StaticResource EyebrowTextStyle}" />
-                                    <TextBlock Text="Switcher" Style="{StaticResource SectionHeaderStyle}" />
+                                    <TextBlock Text="EN-UA Switcher" Style="{StaticResource SectionHeaderStyle}" />
                                     <TextBlock Style="{StaticResource MutedTextStyle}"
                                                Text="EN / UA Keyboard Layout Corrector"
                                                Margin="0,0,0,12" />
                                     <TextBlock Style="{StaticResource MutedTextStyle}"
-                                               Text="Switcher detects text typed in the wrong keyboard layout and corrects it across native editors, browser inputs and selected fallback paths." />
+                                               Text="EN-UA Switcher detects text typed in the wrong keyboard layout and corrects it across native editors, browser inputs and selected fallback paths." />
                                 </StackPanel>
                             </Border>
 

@@ -24,7 +24,7 @@ public partial class Form1 : Form
 
     private void BuildUI()
     {
-        Text = "Switcher Test Target — Native EDIT Controls";
+        Text = "EN-UA Switcher Test Target — Native EDIT Controls";
         Width = 700;
         Height = 580;
         BackColor = Color.FromArgb(30, 30, 30);
