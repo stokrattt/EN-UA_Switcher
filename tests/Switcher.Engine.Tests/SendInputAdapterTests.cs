@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Switcher.Core;
 using Switcher.Engine;
 using Switcher.Infrastructure;
@@ -36,8 +37,10 @@ internal class FakeAdapter : ITextTargetAdapter
     public string DescribeSupport(ForegroundContext ctx) => _support.ToString();
     public string? TryGetLastWord(ForegroundContext ctx) => null;
     public string? TryGetSelectedText(ForegroundContext ctx) => null;
+    public string? TryGetCurrentSentence(ForegroundContext ctx) => null;
     public bool TryReplaceLastWord(ForegroundContext ctx, string r) => false;
     public bool TryReplaceSelection(ForegroundContext ctx, string r) => false;
+    public bool TryReplaceCurrentSentence(ForegroundContext ctx, string r) => false;
 }
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
@@ -99,6 +102,26 @@ public class SendInputAdapterTests
         // Fresh observer has no buffered word
         Assert.Null(Adapter().TryGetLastWord(CtxHelper.Dummy()));
     }
+
+    [Fact]
+    public void TryGetLastWord_UsesCurrentBufferedWord_WhenNoCompletedWordExists()
+    {
+        var observer = new KeyboardObserver();
+        var bufferField = typeof(KeyboardObserver).GetField("_scanBuffer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        bufferField.SetValue(observer, new List<(uint scan, uint rawScan, uint vk, bool shift, uint flags)>
+        {
+            (0x22, 0x22, 0x47, false, 0), // g
+            (0x23, 0x23, 0x48, false, 0), // h
+            (0x30, 0x30, 0x42, false, 0), // b
+            (0x20, 0x20, 0x44, false, 0), // d
+            (0x1F, 0x1F, 0x53, false, 0), // s
+            (0x31, 0x31, 0x4E, false, 0), // n
+        });
+
+        var adapter = new SendInputAdapter(observer);
+
+        Assert.Equal("ghbdsn", adapter.TryGetLastWord(CtxHelper.Dummy()));
+    }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -146,6 +169,50 @@ public class TextTargetCoordinatorPriorityTests
 public class KeyboardObserverBufferTests
 {
     [Fact]
+    public void BackspaceCancel_Enabled_ClearsWholeBufferedWord_BeforeDelimiter()
+    {
+        var settings = new SettingsManager();
+        settings.Current.CancelOnBackspace = true;
+
+        var obs = new KeyboardObserver(settings);
+        SeedBufferedWord(obs, "abc");
+
+        SimulateKeyDown(obs, NativeMethods.VK_BACK, 0x0E);
+
+        Assert.Equal("", obs.GetVisibleWordNearCaret());
+        Assert.Equal(0, GetBufferedCount(obs));
+    }
+
+    [Fact]
+    public void BackspaceCancel_Disabled_RemovesOnlyLastBufferedChar_BeforeDelimiter()
+    {
+        var settings = new SettingsManager();
+        settings.Current.CancelOnBackspace = false;
+
+        var obs = new KeyboardObserver(settings);
+        SeedBufferedWord(obs, "abc");
+
+        SimulateKeyDown(obs, NativeMethods.VK_BACK, 0x0E);
+
+        Assert.Equal("ab", obs.GetVisibleWordNearCaret());
+        Assert.Equal(2, GetBufferedCount(obs));
+    }
+
+    [Fact]
+    public void SafeHotkeyChord_DoesNotClearBufferedWord()
+    {
+        var settings = new SettingsManager();
+        var obs = new KeyboardObserver(settings);
+        SeedBufferedWord(obs, "abc");
+        SetModifierState(obs, ctrlHeld: true, shiftHeld: true, altHeld: false);
+
+        SimulateKeyDown(obs, settings.Current.SafeLastWordHotkey.VirtualKey, 0x25);
+
+        Assert.Equal("abc", obs.GetVisibleWordNearCaret());
+        Assert.Equal(3, GetBufferedCount(obs));
+    }
+
+    [Fact]
     public void CurrentWord_InitiallyEmpty()
     {
         var obs = new KeyboardObserver();
@@ -185,6 +252,71 @@ public class KeyboardObserverBufferTests
         obs.ResetBuffer();
         obs.ResetBuffer();
         Assert.Equal("", obs.CurrentWord);
+    }
+
+    private static void SeedBufferedWord(KeyboardObserver observer, string word)
+    {
+        var keysSinceDelimiterField = typeof(KeyboardObserver).GetField("_keysSinceDelimiter", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var scanBufferField = typeof(KeyboardObserver).GetField("_scanBuffer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var lastForegroundPidField = typeof(KeyboardObserver).GetField("_lastForegroundPid", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+
+        keysSinceDelimiterField.SetValue(observer, word.Length);
+
+        var buffer = (List<(uint scan, uint rawScan, uint vk, bool shift, uint flags)>)scanBufferField.GetValue(observer)!;
+        buffer.Clear();
+
+        foreach (char c in word)
+            buffer.Add(MapChar(c));
+
+        IntPtr hwnd = NativeMethods.GetForegroundWindow();
+        NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
+        lastForegroundPidField.SetValue(observer, pid);
+    }
+
+    private static int GetBufferedCount(KeyboardObserver observer)
+    {
+        var scanBufferField = typeof(KeyboardObserver).GetField("_scanBuffer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var buffer = (System.Collections.ICollection)scanBufferField.GetValue(observer)!;
+        return buffer.Count;
+    }
+
+    private static void SetModifierState(KeyboardObserver observer, bool ctrlHeld, bool shiftHeld, bool altHeld)
+    {
+        typeof(KeyboardObserver).GetField("_ctrlHeld", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.SetValue(observer, ctrlHeld);
+        typeof(KeyboardObserver).GetField("_shiftHeld", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.SetValue(observer, shiftHeld);
+        typeof(KeyboardObserver).GetField("_altHeld", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.SetValue(observer, altHeld);
+    }
+
+    private static (uint scan, uint rawScan, uint vk, bool shift, uint flags) MapChar(char c) => c switch
+    {
+        'a' => (0x1E, 0x1E, 0x41, false, 0),
+        'b' => (0x30, 0x30, 0x42, false, 0),
+        'c' => (0x2E, 0x2E, 0x43, false, 0),
+        _ => throw new ArgumentOutOfRangeException(nameof(c), c, "Test helper only supports a/b/c.")
+    };
+
+    private static void SimulateKeyDown(KeyboardObserver observer, uint vk, uint scan)
+    {
+        var hookCallback = typeof(KeyboardObserver).GetMethod("HookCallback", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var kb = new NativeMethods.KBDLLHOOKSTRUCT
+        {
+            vkCode = vk,
+            scanCode = scan,
+            flags = 0,
+            time = 0,
+            dwExtraInfo = IntPtr.Zero
+        };
+
+        IntPtr ptr = Marshal.AllocHGlobal(Marshal.SizeOf<NativeMethods.KBDLLHOOKSTRUCT>());
+        try
+        {
+            Marshal.StructureToPtr(kb, ptr, false);
+            hookCallback.Invoke(observer, new object[] { 0, (IntPtr)NativeMethods.WM_KEYDOWN, ptr });
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(ptr);
+        }
     }
 }
 

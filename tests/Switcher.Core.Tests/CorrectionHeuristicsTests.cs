@@ -115,6 +115,70 @@ public class CorrectionHeuristicsTests
         Assert.Equal("hello", result.ConvertedText);
     }
 
+    [Fact]
+    public void Evaluate_RsheInAutoMode_ConvertedToHit()
+    {
+        var result = Evaluate("рше", CorrectionMode.Auto);
+        Assert.NotNull(result);
+        Assert.Equal(CorrectionDirection.UaToEn, result!.Direction);
+        Assert.Equal("hit", result.ConvertedText);
+    }
+
+    [Fact]
+    public void Evaluate_MukvuInSafeMode_ConvertedToVerde()
+    {
+        var result = Evaluate("мукву", CorrectionMode.Safe);
+        Assert.NotNull(result);
+        Assert.Equal(CorrectionDirection.UaToEn, result!.Direction);
+        Assert.Equal("verde", result.ConvertedText);
+    }
+
+    [Theory]
+    [InlineData("lfdfq", "давай")]
+    [InlineData("ljlfq", "додай")]
+    [InlineData("pybpe", "знизу")]
+    public void Evaluate_CommonUkrainianWordsInAutoMode_Converted(string word, string expected)
+    {
+        Assert.False(CorrectionHeuristics.IsInDictionary(expected, CorrectionDirection.EnToUa));
+
+        var result = Evaluate(word, CorrectionMode.Auto);
+        Assert.NotNull(result);
+        Assert.Equal(CorrectionDirection.EnToUa, result!.Direction);
+        Assert.Equal(expected, result.ConvertedText);
+    }
+
+    [Theory]
+    [InlineData("db", "ви")]
+    [InlineData("]]", "її")]
+    [InlineData("][", "їх")]
+    [InlineData("xjve", "чому")]
+    [InlineData(",elt", "буде")]
+    [InlineData(";bnnz", "життя")]
+    [InlineData("];f", "їжа")]
+    [InlineData("uhjis", "гроші")]
+    [InlineData("lheu", "друг")]
+    [InlineData("[ks,", "хліб")]
+    public void Evaluate_ExternalSmokeFailuresInAutoMode_NowConvert(string word, string expected)
+    {
+        var result = Evaluate(word, CorrectionMode.Auto);
+
+        Assert.NotNull(result);
+        Assert.Equal(CorrectionDirection.EnToUa, result!.Direction);
+        Assert.Equal(expected, result.ConvertedText);
+    }
+
+    [Theory]
+    [InlineData("rjine'", "коштує")]
+    [InlineData("gf-gf", "па-па")]
+    public void Evaluate_PhraseSmokeEdgeCasesInAutoMode_Converted(string word, string expected)
+    {
+        var result = Evaluate(word, CorrectionMode.Auto);
+
+        Assert.NotNull(result);
+        Assert.Equal(CorrectionDirection.EnToUa, result!.Direction);
+        Assert.Equal(expected, result.ConvertedText);
+    }
+
     // ─── 4. Short words — skipped in Auto mode (unless dictionary-confirmed) ──
 
     [Theory]
@@ -277,6 +341,13 @@ public class CorrectionHeuristicsTests
     {
         // "hello." should still be recognized as English and skipped
         var result = Evaluate("hello.", CorrectionMode.Auto);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void Evaluate_EnglishWordWithPeriod_AndNoDictionaryHit_StillSkipped()
+    {
+        var result = Evaluate("future.", CorrectionMode.Auto);
         Assert.Null(result);
     }
 

@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace Switcher.Infrastructure;
 
@@ -119,6 +120,9 @@ public static class NativeMethods
     [DllImport("user32.dll")]
     public static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool PostThreadMessage(uint idThread, int msg, IntPtr wParam, IntPtr lParam);
+
     [DllImport("user32.dll")]
     public static extern int GetKeyboardLayoutList(int nBuff, IntPtr[] lpList);
 
@@ -152,24 +156,25 @@ public static class NativeMethods
         if (focusedHwnd != IntPtr.Zero && focusedHwnd != hwnd)
             PostMessage(focusedHwnd, WM_INPUTLANGCHANGEREQUEST, IntPtr.Zero, hklToPost);
 
-        // Strategy 2: Async verify + toggle (for Electron, Chrome, etc.)
-        Task.Run(async () =>
+        // Strategy 2: async verify + toggle (for Electron, Chrome, etc.).
+        // Doing this off the immediate correction path reduces the chance that
+        // synthetic Ctrl/Shift or Alt/Shift will interleave with the user's next keystrokes.
+        _ = Task.Run(async () =>
         {
             await Task.Delay(80);
 
-            // Check if PostMessage worked
-            if (((long)GetKeyboardLayout(targetThread) & 0xFFFF) == targetLang) return;
+            if (((long)GetKeyboardLayout(targetThread) & 0xFFFF) == targetLang)
+                return;
 
-            // Read which hotkey the system uses: Alt+Shift (1), Ctrl+Shift (2), or none (3)
             bool useCtrlShift = IsToggleHotkeyCtrlShift();
 
-            // Toggle up to 5 times, verifying after each
             for (int attempt = 0; attempt < 5; attempt++)
             {
                 SimulateLayoutToggle(useCtrlShift);
                 await Task.Delay(80);
 
-                if (((long)GetKeyboardLayout(targetThread) & 0xFFFF) == targetLang) return;
+                if (((long)GetKeyboardLayout(targetThread) & 0xFFFF) == targetLang)
+                    return;
             }
         });
     }
@@ -343,6 +348,14 @@ public static class NativeMethods
 
     public const uint VK_LEFT = 0x25;
     public const uint VK_RIGHT = 0x27;
+    public const uint VK_HOME = 0x24;
+    public const uint VK_END = 0x23;
+    public const uint VK_LSHIFT = 0xA0;
+    public const uint VK_RSHIFT = 0xA1;
+    public const uint VK_LCONTROL = 0xA2;
+    public const uint VK_RCONTROL = 0xA3;
+    public const uint VK_LMENU = 0xA4;
+    public const uint VK_RMENU = 0xA5;
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool OpenClipboard(IntPtr hWndNewOwner);
@@ -429,4 +442,21 @@ public static class NativeMethods
             CloseClipboard();
         }
     }
+
+    /// <summary>
+    /// Releases modifier keys that may still be logically down when a global hotkey fires.
+    /// This prevents injected follow-up input from becoming Ctrl+Backspace / Shift+End, etc.
+    /// </summary>
+    public static INPUT[] BuildModifierReleaseInputs() => new[]
+    {
+        MakeKeyInput(VK_SHIFT, keyUp: true),
+        MakeKeyInput(VK_CONTROL, keyUp: true),
+        MakeKeyInput(VK_MENU, keyUp: true),
+        MakeKeyInput(VK_LSHIFT, keyUp: true),
+        MakeKeyInput(VK_RSHIFT, keyUp: true),
+        MakeKeyInput(VK_LCONTROL, keyUp: true),
+        MakeKeyInput(VK_RCONTROL, keyUp: true),
+        MakeKeyInput(VK_LMENU, keyUp: true),
+        MakeKeyInput(VK_RMENU, keyUp: true),
+    };
 }

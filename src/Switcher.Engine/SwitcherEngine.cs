@@ -12,6 +12,8 @@ public class SwitcherEngine : IDisposable
 {
     public SettingsManager Settings { get; }
     public DiagnosticsLogger Diagnostics { get; }
+    public bool SafeHotkeysAvailable => _hotkeyManager?.IsRegistered ?? false;
+    public string? SafeHotkeysError => _hotkeyManager?.LastRegistrationError;
 
     private readonly ForegroundContextProvider _contextProvider;
     private readonly TextTargetCoordinator _coordinator;
@@ -61,6 +63,12 @@ public class SwitcherEngine : IDisposable
         _hotkeyManager.LastWordHotkeyPressed += OnLastWordHotkey;
         _hotkeyManager.SelectionHotkeyPressed += OnSelectionHotkey;
         _hotkeyManager.Start();
+
+        if (!_hotkeyManager.IsRegistered && !string.IsNullOrWhiteSpace(_hotkeyManager.LastRegistrationError))
+        {
+            Diagnostics.Log("Switcher", "Hotkeys", "GlobalHotkeyManager", false, OperationType.SafeLastWord,
+                "", null, DiagnosticResult.Error, _hotkeyManager.LastRegistrationError);
+        }
     }
 
     /// <summary>Stops the engine and releases all resources.</summary>
@@ -93,6 +101,12 @@ public class SwitcherEngine : IDisposable
         _hotkeyManager?.UpdateHotkeys(
             Settings.Current.SafeLastWordHotkey,
             Settings.Current.SafeSelectionHotkey);
+
+        if (_hotkeyManager is { IsRegistered: false } && !string.IsNullOrWhiteSpace(_hotkeyManager.LastRegistrationError))
+        {
+            Diagnostics.Log("Switcher", "Hotkeys", "GlobalHotkeyManager", false, OperationType.SafeLastWord,
+                "", null, DiagnosticResult.Error, _hotkeyManager.LastRegistrationError);
+        }
     }
 
     // ─── Event handlers ──────────────────────────────────────────────────────

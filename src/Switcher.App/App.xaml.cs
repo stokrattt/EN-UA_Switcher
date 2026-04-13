@@ -1,4 +1,5 @@
-﻿using System.Drawing;
+using System.Drawing;
+using System.Threading;
 using System.Windows;
 using System.Windows.Forms;
 using Switcher.Engine;
@@ -7,13 +8,30 @@ namespace Switcher.App;
 
 public partial class App : System.Windows.Application
 {
+    private const string SingleInstanceMutexName = @"Global\Switcher_EN_UA_SingleInstance";
+
     private NotifyIcon? _trayIcon;
     private SwitcherEngine? _engine;
     private MainWindow? _mainWindow;
+    private Mutex? _singleInstanceMutex;
+    private bool _ownsSingleInstanceMutex;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        _singleInstanceMutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out bool createdNew);
+        if (!createdNew)
+        {
+            System.Windows.MessageBox.Show(
+                "Switcher is already running in the system tray.",
+                "Switcher",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            Current.Shutdown();
+            return;
+        }
+        _ownsSingleInstanceMutex = true;
 
         _engine = new SwitcherEngine();
         _engine.Start();
@@ -33,19 +51,32 @@ public partial class App : System.Windows.Application
             Icon = TrayIconHelper.CreateIcon()
         };
 
-        var menu = new ContextMenuStrip();
-        menu.Renderer = new DarkMenuRenderer();
-        menu.BackColor = Color.FromArgb(45, 45, 48);
+        var menu = new ContextMenuStrip
+        {
+            Renderer = new MaterialMenuRenderer(),
+            BackColor = Color.FromArgb(32, 29, 29),
+            ForeColor = Color.FromArgb(244, 247, 251),
+            ShowImageMargin = false,
+            ShowCheckMargin = false,
+            Padding = new Padding(6),
+            Font = new System.Drawing.Font("Segoe UI", 10f, System.Drawing.FontStyle.Regular),
+            AutoSize = true
+        };
 
         var openItem = menu.Items.Add("Open Settings");
+        openItem.Padding = new Padding(18, 10, 26, 10);
+        openItem.TextAlign = ContentAlignment.MiddleLeft;
+        openItem.Tag = "chevron";
         openItem.Click += (_, _) => ShowMainWindow();
 
         var autoItem = new ToolStripMenuItem("Auto Mode")
         {
             CheckOnClick = true,
             Checked = _engine!.Settings.Current.AutoModeEnabled,
-            ForeColor = Color.FromArgb(224, 224, 224)
+            ForeColor = Color.FromArgb(244, 247, 251),
+            Padding = new Padding(18, 10, 26, 10)
         };
+        autoItem.TextAlign = ContentAlignment.MiddleLeft;
         autoItem.Click += (_, _) =>
         {
             _engine!.Settings.Current.AutoModeEnabled = autoItem.Checked;
@@ -54,15 +85,29 @@ public partial class App : System.Windows.Application
         };
         menu.Items.Add(autoItem);
 
-        menu.Items.Add(new ToolStripSeparator());
-
         var diagItem = menu.Items.Add("View Diagnostics");
+        diagItem.Padding = new Padding(18, 10, 26, 10);
+        diagItem.TextAlign = ContentAlignment.MiddleLeft;
+        diagItem.Tag = "chevron";
         diagItem.Click += (_, _) => ShowDiagnosticsWindow();
 
-        menu.Items.Add(new ToolStripSeparator());
-
         var exitItem = menu.Items.Add("Exit");
+        exitItem.Padding = new Padding(18, 10, 18, 10);
+        exitItem.TextAlign = ContentAlignment.MiddleLeft;
         exitItem.Click += (_, _) => ExitApp();
+
+        ToolStripItem[] textItems = [openItem, autoItem, diagItem, exitItem];
+        int textWidth = textItems
+            .Max(item => TextRenderer.MeasureText(item.Text ?? string.Empty, menu.Font).Width);
+        int itemWidth = textWidth + 44;
+        foreach (ToolStripItem item in textItems)
+        {
+            item.AutoSize = false;
+            item.Width = itemWidth;
+        }
+
+        menu.AutoSize = false;
+        menu.Width = itemWidth + 12;
 
         _trayIcon.ContextMenuStrip = menu;
         _trayIcon.DoubleClick += (_, _) => ShowMainWindow();
@@ -73,9 +118,10 @@ public partial class App : System.Windows.Application
     {
         if (_trayIcon == null || _engine == null) return;
         bool autoEnabled = _engine.Settings.Current.AutoModeEnabled;
+        bool hotkeysReady = _engine.SafeHotkeysAvailable;
         _trayIcon.Text = autoEnabled
-            ? "Switcher — Auto mode ON"
-            : "Switcher — Safe mode only";
+            ? (hotkeysReady ? "Switcher — Auto ON, hotkeys ON" : "Switcher — Auto ON, hotkeys unavailable")
+            : (hotkeysReady ? "Switcher — Auto OFF, hotkeys ON" : "Switcher — Auto OFF, hotkeys unavailable");
     }
 
     private void ShowMainWindow()
@@ -87,6 +133,8 @@ public partial class App : System.Windows.Application
         }
         else
         {
+            if (!_mainWindow.IsVisible)
+                _mainWindow.Show();
             _mainWindow.Activate();
             _mainWindow.WindowState = WindowState.Normal;
         }
@@ -113,7 +161,9 @@ public partial class App : System.Windows.Application
         _engine?.Stop();
         _engine?.Dispose();
         _trayIcon?.Dispose();
+        if (_ownsSingleInstanceMutex)
+            _singleInstanceMutex?.ReleaseMutex();
+        _singleInstanceMutex?.Dispose();
         base.OnExit(e);
     }
 }
-

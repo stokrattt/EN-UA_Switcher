@@ -18,6 +18,11 @@ namespace Switcher.Engine;
 /// </summary>
 public class AutoModeHandler
 {
+    private static readonly HashSet<string> BrowserProcesses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "chrome", "msedge", "brave", "opera", "vivaldi"
+    };
+
     private readonly ForegroundContextProvider _contextProvider;
     private readonly ExclusionManager _exclusions;
     private readonly DiagnosticsLogger _diagnostics;
@@ -25,8 +30,9 @@ public class AutoModeHandler
     private readonly KeyboardObserver _observer;
 
     // ─── Undo state ──────────────────────────────────────────────────────────
-    private record UndoState(string OriginalText, string ReplacementText, CorrectionDirection Direction);
+    private record UndoState(string OriginalText, string ReplacementText, CorrectionDirection Direction, uint DelimiterVk);
     private UndoState? _lastCorrection;
+    private int _autoOperationInFlight;
 
     public AutoModeHandler(
         ForegroundContextProvider contextProvider,
@@ -90,6 +96,10 @@ public class AutoModeHandler
             // sometimes sends fake sequential scan/VK codes instead of real hardware data.
             if (approxWordLength >= 3 && wordEN.Length < 2 && wordUA.Length < 2)
             {
+                if (!TryBeginAutoOperation(proc, cls, originalDisplay,
+                        $"Skipped empty-buffer fallback: previous auto operation still in progress {techDetail} [{rawDebug}]"))
+                    return;
+
                 _diagnostics.Log(proc, cls, "SendInput", false, OperationType.AutoMode,
                     originalDisplay, null, DiagnosticResult.Skipped,
                     $"L1 empty → clipboard fallback {techDetail} [{rawDebug}]");
@@ -122,12 +132,39 @@ public class AutoModeHandler
             return;
         }
 
+        if (IsExcludedAutoWord(wordEN, wordUA, vkEN, vkUA))
+        {
+            _diagnostics.Log(proc, cls, "SendInput", false, OperationType.AutoMode, originalDisplay, null,
+                DiagnosticResult.Skipped, $"Word is excluded from Auto Mode {techDetail}");
+            return;
+        }
+
+        if (BrowserProcesses.Contains(context.ProcessName) && approxWordLength >= 2)
+        {
+            if (!TryBeginAutoOperation(proc, cls, originalDisplay,
+                    $"Skipped browser fallback: previous auto operation still in progress {techDetail} [{rawDebug}]"))
+                return;
+
+            _diagnostics.Log(proc, cls, "UIAutomationTargetAdapter", true, OperationType.AutoMode,
+                originalDisplay, null, DiagnosticResult.Skipped,
+                $"Browser target detected → prefer UIA/clipboard fallback {techDetail} [{rawDebug}]");
+            _observer.SuppressCurrentDelimiter();
+            uint fallbackDelimVk = _observer.LastDelimiterVk;
+            var fallbackContext = context;
+            _ = Task.Run(() => BrowserAutoFallback(approxWordLength, fallbackDelimVk, fallbackContext, layoutTag, rawDebug));
+            return;
+        }
+
         // ─── Chrome garbage fast-path ─────────────────────────────────────────
         // Chrome sends COMPLETELY FAKE sequential scan AND VK codes.
         // Both scan-based and VK-based interpretations are garbage.
         // Skip L1/L2 entirely, go straight to clipboard fallback.
         if (chromeGarbage && approxWordLength >= 3)
         {
+            if (!TryBeginAutoOperation(proc, cls, originalDisplay,
+                    $"Skipped Chromium fallback: previous auto operation still in progress {techDetail} [{rawDebug}]"))
+                return;
+
             _diagnostics.Log(proc, cls, "SendInput", true, OperationType.AutoMode,
                 originalDisplay, null, DiagnosticResult.Skipped,
                 $"Sequential scans detected → clipboard fallback {techDetail} [{rawDebug}]");
@@ -146,7 +183,7 @@ public class AutoModeHandler
         if (wordEN.Length >= 2)
         {
             var c = CorrectionHeuristics.Evaluate(wordEN, CorrectionMode.Auto);
-            if (c != null && CorrectionHeuristics.IsInDictionary(c.ConvertedText, c.Direction))
+            if (c != null)
                 candidate = c;
         }
 
@@ -172,7 +209,7 @@ public class AutoModeHandler
                 if (vkEN.Length >= 2)
                 {
                     var c = CorrectionHeuristics.Evaluate(vkEN, CorrectionMode.Auto);
-                    if (c != null && CorrectionHeuristics.IsInDictionary(c.ConvertedText, c.Direction))
+                    if (c != null)
                         candidate = c;
                 }
                 if (candidate == null && vkUA.Length >= 2)
@@ -181,6 +218,10 @@ public class AutoModeHandler
 
             if (candidate == null)
             {
+                if (!TryBeginAutoOperation(proc, cls, originalDisplay,
+                        $"Skipped clipboard fallback: previous auto operation still in progress {techDetail} [{rawDebug}]"))
+                    return;
+
                 // ─── Layer 3: Clipboard fallback ────────────────────────────
                 _diagnostics.Log(proc, cls, "SendInput", true, OperationType.AutoMode,
                     originalDisplay, null, DiagnosticResult.Skipped,
@@ -204,6 +245,10 @@ public class AutoModeHandler
         }
 
         // We have a candidate — suppress delimiter and replace async
+        if (!TryBeginAutoOperation(proc, cls, originalDisplay,
+                $"Skipped auto replacement: previous auto operation still in progress {techDetail} [{rawDebug}]"))
+            return;
+
         uint delimVk = _observer.LastDelimiterVk;
         _observer.SuppressCurrentDelimiter();
 
@@ -251,7 +296,7 @@ public class AutoModeHandler
                         toUkrainian: direction == CorrectionDirection.EnToUa);
 
                     // Save undo state so Backspace can revert this correction
-                    _lastCorrection = new UndoState(original, replacement, direction);
+                    _lastCorrection = new UndoState(original, replacement, direction, delimVk);
                 }
 
                 // Re-inject the suppressed delimiter after replacement is processed.
@@ -262,7 +307,26 @@ public class AutoModeHandler
             {
                 ReinjectDelimiter(delimVk);
             }
+            finally
+            {
+                EndAutoOperation();
+            }
         });
+    }
+
+    private bool TryBeginAutoOperation(string proc, string cls, string originalDisplay, string reason)
+    {
+        if (Interlocked.CompareExchange(ref _autoOperationInFlight, 1, 0) == 0)
+            return true;
+
+        _diagnostics.Log(proc, cls, "SendInput", true, OperationType.AutoMode,
+            originalDisplay, null, DiagnosticResult.Skipped, reason);
+        return false;
+    }
+
+    private void EndAutoOperation()
+    {
+        Volatile.Write(ref _autoOperationInFlight, 0);
     }
 
     private static void ReinjectDelimiter(uint delimVk)
@@ -289,6 +353,9 @@ public class AutoModeHandler
             // 0. Give the app time to finish processing the typed characters.
             //    Chrome's async input pipeline may still be committing the last keys.
             Thread.Sleep(150);
+
+            if (context != null && TryUiAutomationFallback(context, delimVk, layoutTag, rawDebug))
+                return;
 
             // 1. Save current clipboard and CLEAR it so we can detect when copy succeeds
             string? savedClipboard = NativeMethods.GetClipboardText();
@@ -346,14 +413,16 @@ public class AutoModeHandler
 
             // 7. Evaluate heuristics on the actual screen text
             string trimmed = selectedText.Trim();
-            var candidate = CorrectionHeuristics.Evaluate(trimmed, CorrectionMode.Auto);
-
-            // Apply the same guards as normal flow
-            if (candidate != null && candidate.Direction == CorrectionDirection.EnToUa)
+            if (_exclusions.IsWordExcluded(trimmed))
             {
-                if (!CorrectionHeuristics.IsInDictionary(candidate.ConvertedText, candidate.Direction))
-                    candidate = null;
+                _diagnostics.Log(proc, cls, "SendInput", true, OperationType.AutoMode,
+                    trimmed, null, DiagnosticResult.Skipped,
+                    $"Clipboard fallback: word is excluded from Auto Mode (layout={layoutTag}) [{rawDebug}]");
+                ReinjectDelimiter(delimVk);
+                return;
             }
+
+            var candidate = CorrectionHeuristics.Evaluate(trimmed, CorrectionMode.Auto);
 
             if (candidate == null)
             {
@@ -403,7 +472,7 @@ public class AutoModeHandler
                     NativeMethods.SwitchInputLanguage(context.Hwnd, context.FocusedControlHwnd,
                         toUkrainian: candidate.Direction == CorrectionDirection.EnToUa);
 
-                _lastCorrection = new UndoState(candidate.OriginalText, candidate.ConvertedText, candidate.Direction);
+                _lastCorrection = new UndoState(candidate.OriginalText, candidate.ConvertedText, candidate.Direction, delimVk);
             }
 
             Thread.Sleep(30);
@@ -415,6 +484,86 @@ public class AutoModeHandler
                 "", null, DiagnosticResult.Error,
                 $"Clipboard fallback error: {ex.Message}");
             ReinjectDelimiter(delimVk);
+        }
+        finally
+        {
+            EndAutoOperation();
+        }
+    }
+
+    private bool TryUiAutomationFallback(ForegroundContext context, uint delimVk, string layoutTag, string rawDebug)
+    {
+        try
+        {
+            var adapter = new UIAutomationTargetAdapter();
+            if (adapter.CanHandle(context) != TargetSupport.Full)
+                return false;
+
+            string? actualWord = adapter.TryGetLastWord(context);
+            if (string.IsNullOrWhiteSpace(actualWord) || actualWord.Length < 2)
+                return false;
+
+            if (_exclusions.IsWordExcluded(actualWord))
+                return false;
+
+            var candidate = CorrectionHeuristics.Evaluate(actualWord, CorrectionMode.Auto);
+
+            if (candidate == null)
+                return false;
+
+            bool success = adapter.TryReplaceLastWord(context, candidate.ConvertedText);
+            _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
+                adapter.AdapterName, true, OperationType.AutoMode,
+                candidate.OriginalText, candidate.ConvertedText,
+                success ? DiagnosticResult.Replaced : DiagnosticResult.Error,
+                success
+                    ? $"UIA fallback: {candidate.Reason} layout={layoutTag}"
+                    : "UIA fallback: replacement failed");
+
+            if (!success)
+                return false;
+
+            _observer.ClearBuffer();
+            NativeMethods.SwitchInputLanguage(context.Hwnd, context.FocusedControlHwnd,
+                toUkrainian: candidate.Direction == CorrectionDirection.EnToUa);
+            _lastCorrection = new UndoState(candidate.OriginalText, candidate.ConvertedText, candidate.Direction, delimVk);
+            Thread.Sleep(30);
+            ReinjectDelimiter(delimVk);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
+                "UIAutomationTargetAdapter", true, OperationType.AutoMode,
+                "", null, DiagnosticResult.Error,
+                $"UIA fallback error: {ex.Message} [{rawDebug}]");
+            return false;
+        }
+    }
+
+    private void BrowserAutoFallback(int wordLen, uint delimVk, ForegroundContext context, string layoutTag, string rawDebug)
+    {
+        try
+        {
+            // Let browser commit the typed text before reading via UIA.
+            Thread.Sleep(120);
+
+            if (TryUiAutomationFallback(context, delimVk, layoutTag, rawDebug))
+            {
+                EndAutoOperation();
+                return;
+            }
+
+            ClipboardFallback(wordLen, delimVk, context, layoutTag, rawDebug);
+        }
+        catch (Exception ex)
+        {
+            _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
+                "UIAutomationTargetAdapter", true, OperationType.AutoMode,
+                "", null, DiagnosticResult.Error,
+                $"Browser auto fallback error: {ex.Message}");
+            ReinjectDelimiter(delimVk);
+            EndAutoOperation();
         }
     }
 
@@ -440,23 +589,7 @@ public class AutoModeHandler
         {
             try
             {
-                // Erase: replacement.Length chars + 1 space
-                int eraseCount = undo.ReplacementText.Length + 1;
-                string restoreText = undo.OriginalText;
-
-                var inputs = new NativeMethods.INPUT[eraseCount * 2 + restoreText.Length * 2];
-                int idx = 0;
-
-                for (int i = 0; i < eraseCount; i++)
-                {
-                    inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: false);
-                    inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: true);
-                }
-                foreach (char c in restoreText)
-                {
-                    inputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: false);
-                    inputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: true);
-                }
+                var inputs = BuildUndoInputs(undo.ReplacementText, undo.OriginalText);
 
                 uint sent = NativeMethods.SendInput((uint)inputs.Length, inputs,
                     Marshal.SizeOf<NativeMethods.INPUT>());
@@ -468,9 +601,9 @@ public class AutoModeHandler
                         toUkrainian: undo.Direction != CorrectionDirection.EnToUa);
                 }
 
-                // Re-inject space after restored text
+                // Re-inject the same delimiter that originally triggered correction.
                 Thread.Sleep(30);
-                ReinjectDelimiter(NativeMethods.VK_SPACE);
+                ReinjectDelimiter(undo.DelimiterVk);
 
                 _diagnostics.Log(
                     context?.ProcessName ?? "?",
@@ -482,5 +615,43 @@ public class AutoModeHandler
             }
             catch { /* undo is best-effort */ }
         });
+    }
+
+    private static NativeMethods.INPUT[] BuildUndoInputs(string replacementText, string restoreText)
+    {
+        int eraseCount = replacementText.Length + 1; // replacement + delimiter
+        var modifierRelease = NativeMethods.BuildModifierReleaseInputs();
+        var inputs = new NativeMethods.INPUT[modifierRelease.Length + eraseCount * 2 + restoreText.Length * 2];
+        int idx = 0;
+
+        foreach (var input in modifierRelease)
+            inputs[idx++] = input;
+
+        for (int i = 0; i < eraseCount; i++)
+        {
+            inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: false);
+            inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: true);
+        }
+        foreach (char c in restoreText)
+        {
+            inputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: false);
+            inputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: true);
+        }
+
+        return inputs;
+    }
+
+    private bool IsExcludedAutoWord(params string?[] words)
+    {
+        foreach (string? word in words)
+        {
+            if (string.IsNullOrWhiteSpace(word))
+                continue;
+
+            if (_exclusions.IsWordExcluded(word))
+                return true;
+        }
+
+        return false;
     }
 }

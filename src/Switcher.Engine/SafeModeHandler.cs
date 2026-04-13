@@ -10,7 +10,7 @@ namespace Switcher.Engine;
 /// </summary>
 public class SafeModeHandler
 {
-    private readonly ForegroundContextProvider _contextProvider;
+    private readonly Func<ForegroundContext?> _getContext;
     private readonly TextTargetCoordinator _coordinator;
     private readonly ExclusionManager _exclusions;
     private readonly DiagnosticsLogger _diagnostics;
@@ -22,8 +22,18 @@ public class SafeModeHandler
         ExclusionManager exclusions,
         DiagnosticsLogger diagnostics,
         SettingsManager settings)
+        : this(contextProvider.GetCurrent, coordinator, exclusions, diagnostics, settings)
     {
-        _contextProvider = contextProvider;
+    }
+
+    internal SafeModeHandler(
+        Func<ForegroundContext?> getContext,
+        TextTargetCoordinator coordinator,
+        ExclusionManager exclusions,
+        DiagnosticsLogger diagnostics,
+        SettingsManager settings)
+    {
+        _getContext = getContext;
         _coordinator = coordinator;
         _exclusions = exclusions;
         _diagnostics = diagnostics;
@@ -44,7 +54,7 @@ public class SafeModeHandler
 
     private void Execute(OperationType opType, bool isSelection)
     {
-        var context = _contextProvider.GetCurrent();
+        var context = _getContext();
         if (context == null)
         {
             _diagnostics.Log("?", "?", "none", false, opType, "", null,
@@ -59,147 +69,166 @@ public class SafeModeHandler
             return;
         }
 
-        var (adapter, support) = _coordinator.Resolve(context);
-
-        if (adapter == null || support == TargetSupport.Unsupported)
+        var candidates = _coordinator.ResolveCandidates(context);
+        if (candidates.Count == 0)
         {
             _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
-                adapter?.AdapterName ?? "none", false, opType, "", null,
+                "none", false, opType, "", null,
                 DiagnosticResult.Unsupported,
                 $"No adapter supports this target: class={context.FocusedControlClass}");
             return;
         }
 
-        if (support == TargetSupport.ReadOnly)
+        if (isSelection)
+            FixSelectedText(context, candidates, opType);
+        else
+            FixLastWordInTarget(context, candidates, opType);
+    }
+
+    private void FixLastWordInTarget(
+        ForegroundContext context,
+        IReadOnlyList<(ITextTargetAdapter Adapter, TargetSupport Support)> candidates,
+        OperationType opType)
+    {
+        bool sawReadOnly = false;
+        string? lastFailureReason = null;
+        string lastAdapterName = "none";
+
+        foreach (var (adapter, support) in candidates)
+        {
+            if (support == TargetSupport.ReadOnly)
+            {
+                sawReadOnly = true;
+                continue;
+            }
+
+            string? word = adapter.TryGetLastWord(context);
+            if (string.IsNullOrEmpty(word))
+            {
+                lastFailureReason = "No word found before caret";
+                lastAdapterName = adapter.AdapterName;
+                continue;
+            }
+
+            string converted = KeyboardLayoutMap.ToggleLayoutText(word, out int changedCount);
+            if (changedCount == 0 || string.Equals(converted, word, StringComparison.Ordinal))
+            {
+                _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
+                    adapter.AdapterName, true, opType, word, null,
+                    DiagnosticResult.Skipped, "No mappable EN/UA layout characters found");
+                return;
+            }
+
+            bool success = adapter.TryReplaceLastWord(context, converted);
+            if (success)
+            {
+                _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
+                    adapter.AdapterName, true, opType, word, converted,
+                    DiagnosticResult.Replaced, $"Layout toggle converted {changedCount} char(s)");
+
+                SwitchInputLanguageForConvertedText(context, converted);
+                return;
+            }
+
+            lastFailureReason = "Replacement failed";
+            lastAdapterName = adapter.AdapterName;
+        }
+
+        if (sawReadOnly && lastFailureReason == null)
         {
             _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
-                adapter.AdapterName, true, opType, "", null,
+                candidates[0].Adapter.AdapterName, true, opType, "", null,
                 DiagnosticResult.Unsupported, "Target is read-only");
             return;
         }
 
-        if (isSelection)
-            FixSelectedText(context, adapter, opType);
-        else
-            FixLastWordInTarget(context, adapter, opType);
-    }
-
-    private void FixLastWordInTarget(ForegroundContext context, ITextTargetAdapter adapter, OperationType opType)
-    {
-        string? word = adapter.TryGetLastWord(context);
-        if (string.IsNullOrEmpty(word))
-        {
-            _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
-                adapter.AdapterName, true, opType, "", null,
-                DiagnosticResult.Skipped, "No word found before caret");
-            return;
-        }
-
-        var candidate = CorrectionHeuristics.Evaluate(word, CorrectionMode.Safe);
-        if (candidate == null)
-        {
-            _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
-                adapter.AdapterName, true, opType, word, null,
-                DiagnosticResult.Skipped, $"No conversion candidate: word appears correct in its script");
-            return;
-        }
-
-        bool success = adapter.TryReplaceLastWord(context, candidate.ConvertedText);
         _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
-            adapter.AdapterName, true, opType, candidate.OriginalText, candidate.ConvertedText,
-            success ? DiagnosticResult.Replaced : DiagnosticResult.Error,
-            success ? candidate.Reason : "Replacement failed");
-
-        if (success)
-            NativeMethods.SwitchInputLanguage(context.Hwnd, context.FocusedControlHwnd,
-                toUkrainian: candidate.Direction == CorrectionDirection.EnToUa);
+            lastAdapterName, true, opType, "", null,
+            lastFailureReason == "Replacement failed" ? DiagnosticResult.Error : DiagnosticResult.Skipped,
+            lastFailureReason ?? "No word found before caret");
     }
 
-    private void FixSelectedText(ForegroundContext context, ITextTargetAdapter adapter, OperationType opType)
+    private void FixSelectedText(
+        ForegroundContext context,
+        IReadOnlyList<(ITextTargetAdapter Adapter, TargetSupport Support)> candidates,
+        OperationType opType)
     {
-        string? selected = adapter.TryGetSelectedText(context);
-        if (string.IsNullOrEmpty(selected))
+        bool sawReadOnly = false;
+        string? lastFailureReason = null;
+        string lastAdapterName = "none";
+
+        foreach (var (adapter, support) in candidates)
+        {
+            if (support == TargetSupport.ReadOnly)
+            {
+                sawReadOnly = true;
+                continue;
+            }
+
+            string? selected = adapter.TryGetSelectedText(context);
+            if (string.IsNullOrEmpty(selected))
+            {
+                lastFailureReason = "No text selected";
+                lastAdapterName = adapter.AdapterName;
+                continue;
+            }
+
+            string converted = KeyboardLayoutMap.ToggleLayoutText(selected, out int changedCount);
+            if (changedCount == 0 || string.Equals(converted, selected, StringComparison.Ordinal))
+            {
+                _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
+                    adapter.AdapterName, true, opType, selected, null,
+                    DiagnosticResult.Skipped, "No mappable EN/UA layout characters found");
+                return;
+            }
+
+            bool success = adapter.TryReplaceSelection(context, converted);
+            if (success)
+            {
+                _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
+                    adapter.AdapterName, true, opType, selected, converted,
+                    DiagnosticResult.Replaced, $"Layout toggle converted {changedCount} char(s)");
+
+                SwitchInputLanguageForConvertedText(context, converted);
+                return;
+            }
+
+            lastFailureReason = "Replacement failed";
+            lastAdapterName = adapter.AdapterName;
+        }
+
+        if (sawReadOnly && lastFailureReason == null)
         {
             _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
-                adapter.AdapterName, true, opType, "", null,
-                DiagnosticResult.Skipped, "No text selected");
+                candidates[0].Adapter.AdapterName, true, opType, "", null,
+                DiagnosticResult.Unsupported, "Target is read-only");
             return;
         }
 
-        // Process selection: if it's a single multi-word string, try converting all words
-        string converted = ConvertSelection(selected, out int changedCount);
-
-        if (changedCount == 0)
-        {
-            _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
-                adapter.AdapterName, true, opType, selected, null,
-                DiagnosticResult.Skipped, "No words in selection needed conversion");
-            return;
-        }
-
-        bool success = adapter.TryReplaceSelection(context, converted);
         _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
-            adapter.AdapterName, true, opType, selected, converted,
-            success ? DiagnosticResult.Replaced : DiagnosticResult.Error,
-            success ? $"Converted {changedCount} word(s)" : "Replacement failed");
-
-        if (success)
-        {
-            var script = KeyboardLayoutMap.ClassifyScript(selected);
-            NativeMethods.SwitchInputLanguage(context.Hwnd, context.FocusedControlHwnd,
-                toUkrainian: script == ScriptType.Latin);
-        }
+            lastAdapterName, true, opType, "", null,
+            lastFailureReason == "Replacement failed" ? DiagnosticResult.Error : DiagnosticResult.Skipped,
+            lastFailureReason ?? "No text selected");
     }
 
-    private static string ConvertSelection(string text, out int changedCount)
+    private static void SwitchInputLanguageForConvertedText(ForegroundContext context, string convertedText)
     {
-        // Split preserving delimiters, evaluate each token
-        changedCount = 0;
-        var parts = SplitPreservingDelimiters(text);
-        var result = new System.Text.StringBuilder();
-        foreach (var part in parts)
+        foreach (char c in convertedText.Reverse())
         {
-            if (IsWordToken(part))
+            if (!char.IsLetter(c))
+                continue;
+
+            var script = KeyboardLayoutMap.ClassifyScript(c.ToString());
+            if (script == ScriptType.Latin)
             {
-                var candidate = CorrectionHeuristics.Evaluate(part, CorrectionMode.Safe);
-                if (candidate != null)
-                {
-                    result.Append(candidate.ConvertedText);
-                    changedCount++;
-                    continue;
-                }
+                NativeMethods.SwitchInputLanguage(context.Hwnd, context.FocusedControlHwnd, toUkrainian: false);
+                return;
             }
-            result.Append(part);
+            if (script == ScriptType.Cyrillic)
+            {
+                NativeMethods.SwitchInputLanguage(context.Hwnd, context.FocusedControlHwnd, toUkrainian: true);
+                return;
+            }
         }
-        return result.ToString();
     }
-
-    private static List<string> SplitPreservingDelimiters(string text)
-    {
-        var parts = new List<string>();
-        var current = new System.Text.StringBuilder();
-        bool inWord = false;
-
-        foreach (char c in text)
-        {
-            bool isDelim = c is ' ' or '\t' or '\n' or '\r';
-            if (inWord && isDelim)
-            {
-                parts.Add(current.ToString());
-                current.Clear();
-                inWord = false;
-            }
-            else if (!inWord && !isDelim)
-            {
-                if (current.Length > 0) { parts.Add(current.ToString()); current.Clear(); }
-                inWord = true;
-            }
-            current.Append(c);
-        }
-        if (current.Length > 0) parts.Add(current.ToString());
-        return parts;
-    }
-
-    private static bool IsWordToken(string s) =>
-        s.Any(c => char.IsLetter(c));
 }

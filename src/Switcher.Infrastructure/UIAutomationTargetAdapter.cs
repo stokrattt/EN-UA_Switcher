@@ -17,10 +17,18 @@ namespace Switcher.Infrastructure;
 /// </summary>
 public class UIAutomationTargetAdapter : ITextTargetAdapter
 {
+    private static readonly HashSet<string> BrowserProcesses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "chrome", "msedge", "brave", "opera", "vivaldi"
+    };
+
     public string AdapterName => "UIAutomationTargetAdapter";
 
-    // Cache: word read by TryGetLastWord, used by TryReplaceLastWord for backspace count
+    // Cache: last UIA read, used by TryReplaceLastWord to replace the exact slice
     private string? _lastReadWord;
+    private string? _lastReadValue;
+    private int _lastWordStart = -1;
+    private int _lastWordEnd = -1;
 
     // Classes that indicate browser/modern app windows (not native edit)
     private static readonly HashSet<string> BrowserWindowClasses = new(StringComparer.OrdinalIgnoreCase)
@@ -44,6 +52,11 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
 
         // Don't compete with native edit adapter
         if (NativeEditClasses.Contains(cls)) return TargetSupport.Unsupported;
+
+        // Be conservative outside real browsers. Electron apps often expose ValuePattern
+        // but behave poorly on SetValue/caret restore, so prefer SendInput fallback there.
+        if (!BrowserProcesses.Contains(context.ProcessName))
+            return TargetSupport.Unsupported;
 
         // Try to get UIA element and check for writable ValuePattern
         IntPtr hwnd = context.FocusedControlHwnd != IntPtr.Zero
@@ -85,7 +98,7 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
         {
             TargetSupport.Full => "Supported: UIA ValuePattern (writable)",
             TargetSupport.ReadOnly => "Read-only: UIA ValuePattern or TextPattern (cannot write)",
-            _ => $"Unsupported: no writable UIA pattern found for class={context.FocusedControlClass}"
+            _ => $"Unsupported: process={context.ProcessName}, class={context.FocusedControlClass}"
         };
     }
 
@@ -93,11 +106,25 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
     public string? TryGetLastWord(ForegroundContext context)
     {
         string? value = TryGetValue();
-        if (value == null) { _lastReadWord = null; return null; }
+        if (value == null)
+        {
+            ClearLastWordCache();
+            return null;
+        }
 
         // Get caret position via TextPattern if available
         int caretPos = TryGetCaretPosition() ?? value.Length;
-        _lastReadWord = ExtractLastWord(value, caretPos);
+        (int start, int end) = FindLastWordBounds(value, caretPos);
+        if (start < 0)
+        {
+            ClearLastWordCache();
+            return null;
+        }
+
+        _lastReadValue = value;
+        _lastWordStart = start;
+        _lastWordEnd = end;
+        _lastReadWord = value[start..end];
         return _lastReadWord;
     }
 
@@ -132,32 +159,53 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
     /// <inheritdoc/>
     public bool TryReplaceLastWord(ForegroundContext context, string replacement)
     {
-        // Use cached word from TryGetLastWord for the backspace count.
-        // We do NOT re-read from UIA here because the element may be stale.
         string? original = _lastReadWord;
-        if (string.IsNullOrEmpty(original)) return false;
+        string? cachedValue = _lastReadValue;
+        if (string.IsNullOrEmpty(original) || cachedValue == null || _lastWordStart < 0 || _lastWordEnd < _lastWordStart)
+            return false;
 
-        int backCount = original.Length;
-        var inputs = new NativeMethods.INPUT[backCount * 2 + replacement.Length * 2];
-        int idx = 0;
-
-        for (int i = 0; i < backCount; i++)
+        try
         {
-            inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: false);
-            inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: true);
-        }
+            var element = AutomationElement.FocusedElement;
+            if (element == null) return false;
+            if (!element.TryGetCurrentPattern(ValuePattern.Pattern, out object? vp)) return false;
 
-        foreach (char c in replacement)
+            var valuePattern = (ValuePattern)vp;
+            if (valuePattern.Current.IsReadOnly) return false;
+
+            string? currentValue = valuePattern.Current.Value;
+            if (currentValue == null) return false;
+
+            if (!TryBuildReplacementValue(
+                    currentValue,
+                    cachedValue,
+                    original,
+                    _lastWordStart,
+                    _lastWordEnd,
+                    replacement,
+                    out string newValue,
+                    out int targetCaretIndex))
+                return false;
+            valuePattern.SetValue(newValue);
+            RestoreCaretPosition(newValue.Length, targetCaretIndex);
+            ClearLastWordCache();
+            return true;
+        }
+        catch
         {
-            inputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: false);
-            inputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: true);
+            return false;
         }
+    }
 
-        uint sent = NativeMethods.SendInput((uint)inputs.Length, inputs,
-            Marshal.SizeOf<NativeMethods.INPUT>());
+    /// <inheritdoc/>
+    public string? TryGetCurrentSentence(ForegroundContext context)
+    {
+        string? value = TryGetValue();
+        if (value == null) return null;
 
-        _lastReadWord = null;
-        return sent == inputs.Length;
+        int caretPos = TryGetCaretPosition() ?? value.Length;
+        (int start, int end) = FindSentenceBounds(value, caretPos);
+        return start < 0 ? null : value[start..end];
     }
 
     /// <inheritdoc/>
@@ -203,6 +251,7 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
 
             string newValue = fullValue[..selStart] + replacement + fullValue[selEnd..];
             valuePattern.SetValue(newValue);
+            RestoreCaretPosition(newValue.Length, selStart + replacement.Length);
             return true;
         }
         catch
@@ -258,6 +307,150 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
         return text[start..end];
     }
 
+    private static bool TryBuildReplacementValue(
+        string currentValue,
+        string cachedValue,
+        string original,
+        int cachedStart,
+        int cachedEnd,
+        string replacement,
+        out string newValue,
+        out int targetCaretIndex)
+    {
+        newValue = currentValue;
+        targetCaretIndex = -1;
+
+        if (string.IsNullOrEmpty(original) || cachedStart < 0 || cachedEnd < cachedStart)
+            return false;
+
+        int start = cachedStart;
+        int end = cachedEnd;
+
+        // If the field changed after read, relocate to the latest exact match first.
+        if (!string.Equals(currentValue, cachedValue, StringComparison.Ordinal))
+        {
+            int idx = currentValue.LastIndexOf(original, StringComparison.Ordinal);
+            if (idx >= 0)
+            {
+                start = idx;
+                end = idx + original.Length;
+            }
+            else
+            {
+                int growth = Math.Max(0, currentValue.Length - cachedValue.Length);
+                int relocatedEnd = Math.Min(currentValue.Length, cachedStart + original.Length + growth);
+                int relocatedStart = Math.Max(0, relocatedEnd - original.Length);
+                start = relocatedStart;
+                end = relocatedEnd;
+            }
+        }
+
+        if (start < 0 || end < start || end > currentValue.Length)
+            return false;
+
+        string currentSlice = currentValue[start..end];
+        if (!string.Equals(currentSlice, original, StringComparison.Ordinal))
+            return false;
+
+        newValue = currentValue[..start] + replacement + currentValue[end..];
+        targetCaretIndex = start + replacement.Length;
+        return true;
+    }
+
+    private static void RestoreCaretPosition(int textLength, int targetCaretIndex)
+    {
+        if (targetCaretIndex < 0 || targetCaretIndex > textLength)
+            return;
+
+        if (TryRestoreCaretViaTextPattern(targetCaretIndex))
+            return;
+
+        var inputs = BuildCaretRestoreInputs(textLength, targetCaretIndex);
+        if (inputs.Length == 0)
+            return;
+
+        NativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<NativeMethods.INPUT>());
+    }
+
+    private static bool TryRestoreCaretViaTextPattern(int targetCaretIndex)
+    {
+        try
+        {
+            var element = AutomationElement.FocusedElement;
+            if (element == null) return false;
+            if (!element.TryGetCurrentPattern(TextPattern.Pattern, out object? tp)) return false;
+
+            var textPattern = (TextPattern)tp;
+            var caretRange = textPattern.DocumentRange.Clone();
+            caretRange.MoveEndpointByUnit(TextPatternRangeEndpoint.Start, TextUnit.Character, targetCaretIndex);
+            caretRange.MoveEndpointByRange(
+                TextPatternRangeEndpoint.End,
+                caretRange,
+                TextPatternRangeEndpoint.Start);
+            caretRange.Select();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool TryReplaceCurrentSentence(ForegroundContext context, string replacement)
+    {
+        try
+        {
+            var element = AutomationElement.FocusedElement;
+            if (element == null) return false;
+            if (!element.TryGetCurrentPattern(ValuePattern.Pattern, out object? vp)) return false;
+
+            var valuePattern = (ValuePattern)vp;
+            if (valuePattern.Current.IsReadOnly) return false;
+
+            string? fullValue = valuePattern.Current.Value;
+            if (fullValue == null) return false;
+
+            int caretPos = TryGetCaretPosition() ?? fullValue.Length;
+            (int start, int end) = FindSentenceBounds(fullValue, caretPos);
+            if (start < 0) return false;
+
+            string newValue = fullValue[..start] + replacement + fullValue[end..];
+            valuePattern.SetValue(newValue);
+            RestoreCaretPosition(newValue.Length, start + replacement.Length);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static NativeMethods.INPUT[] BuildCaretRestoreInputs(int textLength, int targetCaretIndex)
+    {
+        if (targetCaretIndex < 0 || targetCaretIndex > textLength)
+            return [];
+
+        int moveLeftCount = textLength - targetCaretIndex;
+        var inputs = new List<NativeMethods.INPUT>(NativeMethods.BuildModifierReleaseInputs().Length + 4 + moveLeftCount * 2);
+
+        inputs.AddRange(NativeMethods.BuildModifierReleaseInputs());
+
+        // Anchor at the absolute end of the field, then walk left to the desired caret.
+        inputs.Add(NativeMethods.MakeKeyInput(NativeMethods.VK_CONTROL, keyUp: false));
+        inputs.Add(NativeMethods.MakeExtKeyInput(NativeMethods.VK_END, keyUp: false));
+        inputs.Add(NativeMethods.MakeExtKeyInput(NativeMethods.VK_END, keyUp: true));
+        inputs.Add(NativeMethods.MakeKeyInput(NativeMethods.VK_CONTROL, keyUp: true));
+
+        for (int i = 0; i < moveLeftCount; i++)
+        {
+            inputs.Add(NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: false));
+            inputs.Add(NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: true));
+        }
+
+        return inputs.ToArray();
+    }
+
     private static (int start, int end) FindLastWordBounds(string text, int caretPos)
     {
         int end = Math.Min(caretPos, text.Length);
@@ -270,6 +463,38 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
         return text[start..end].Length == 0 ? (-1, -1) : (start, end);
     }
 
+    private static (int start, int end) FindSentenceBounds(string text, int caretPos)
+    {
+        if (string.IsNullOrEmpty(text))
+            return (-1, -1);
+
+        int caret = Math.Clamp(caretPos, 0, text.Length);
+        int start = caret;
+        while (start > 0 && !IsSentenceBoundary(text[start - 1]))
+            start--;
+        while (start < text.Length && char.IsWhiteSpace(text[start]))
+            start++;
+
+        int end = caret;
+        while (end < text.Length && !IsSentenceBoundary(text[end]))
+            end++;
+        while (end > start && char.IsWhiteSpace(text[end - 1]))
+            end--;
+
+        return end > start ? (start, end) : (-1, -1);
+    }
+
     private static bool IsDelimiter(char c) =>
         c is ' ' or '\t' or '\n' or '\r' or '\0';
+
+    private static bool IsSentenceBoundary(char c) =>
+        c is '.' or '!' or '?' or '\n' or '\r';
+
+    private void ClearLastWordCache()
+    {
+        _lastReadWord = null;
+        _lastReadValue = null;
+        _lastWordStart = -1;
+        _lastWordEnd = -1;
+    }
 }

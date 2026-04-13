@@ -9,18 +9,24 @@ namespace Switcher.Core;
 ///
 /// Rules:
 ///   1. Mixed-script words → never convert.
-///   2. Short words (&lt;= 2 letters) → skip in Auto mode; allow in Safe mode only with dictionary hit.
+///   2. Short tokens are treated more strictly in Auto mode, but still evaluated if the language signal is strong enough.
 ///   3. Latin word that looks plausible as English (or other Latin language) → do NOT convert.
 ///   4. Cyrillic word that looks plausible as Ukrainian → do NOT convert.
 ///   5. Only convert when the CONVERTED result has higher plausibility than the ORIGINAL.
 /// </summary>
 public static class CorrectionHeuristics
 {
-    private const double AutoThreshold = 0.75;
-    private const double SafeThreshold = 0.50;
+    private const double AutoThreshold = 0.40;
+    private const double SafeThreshold = 0.44;
+    private const double AutoDeltaThreshold = 0.15;
+    private const double SafeDeltaThreshold = 0.08;
+    private const double AutoTargetFloor = 0.34;
+    private const double SafeTargetFloor = 0.24;
 
     private static readonly HashSet<string> EnDictionary = WordList.LoadEn();
     private static readonly HashSet<string> UaDictionary = WordList.LoadUa();
+    private static readonly NgramProfile EnProfile = NgramProfile.Build(EnDictionary);
+    private static readonly NgramProfile UaProfile = NgramProfile.Build(UaDictionary);
 
     // Common English bigrams (top ~60) for plausibility scoring
     private static readonly HashSet<string> EnBigrams = new(StringComparer.Ordinal)
@@ -79,14 +85,14 @@ public static class CorrectionHeuristics
         if (script == ScriptType.Mixed || script == ScriptType.Other)
             return null;
 
-        int letterCount = stripped.Count(char.IsLetter);
+        int tokenLength = CountTokenChars(stripped);
         double threshold = mode == CorrectionMode.Auto ? AutoThreshold : SafeThreshold;
 
         if (script == ScriptType.Latin)
-            return EvaluateLatin(stripped, prefix, suffix, letterCount, mode, threshold);
+            return EvaluateLatin(stripped, prefix, suffix, tokenLength, mode, threshold);
 
         if (script == ScriptType.Cyrillic)
-            return EvaluateCyrillic(stripped, prefix, suffix, letterCount, mode, threshold);
+            return EvaluateCyrillic(stripped, prefix, suffix, tokenLength, mode, threshold);
 
         return null;
     }
@@ -106,31 +112,17 @@ public static class CorrectionHeuristics
     // ─── Latin word → try EN→UA ─────────────────────────────────────────────
 
     private static CorrectionCandidate? EvaluateLatin(
-        string word, string prefix, string suffix, int letterCount,
+        string word, string prefix, string suffix, int tokenLength,
         CorrectionMode mode, double threshold)
     {
-        // Very short words: skip unless converted result is a known dictionary word
-        if (letterCount <= 2)
-        {
-            if (mode == CorrectionMode.Auto)
-            {
-                // Allow 2-letter words only if converted result is a known UA word
-                // and original is NOT a known EN word (e.g. pf→за, ys→ні, yt→не)
-                string? probe = KeyboardLayoutMap.ConvertEnToUa(word, strict: true);
-                if (probe == null || !UaDictionary.Contains(probe.ToLowerInvariant()))
-                    return null;
-                if (EnDictionary.Contains(word.ToLowerInvariant()))
-                    return null;
-            }
-            // Safe mode: allow all 2-letter words through to full evaluation
-        }
-
         string lower = word.ToLowerInvariant();
+        bool sourceHasLayoutSymbols = lower.Any(KeyboardLayoutMap.IsLayoutLetterChar);
 
         // If the word is a known English word → very likely correct layout → do NOT convert
         // Also check with trailing keyboard-mapped punctuation stripped (e.g., "hello." → "hello")
         string lowerTrimmed = lower.TrimEnd('.', ',', ';', ':', '<', '>');
-        if (EnDictionary.Contains(lower) || EnDictionary.Contains(lowerTrimmed))
+        bool sourceDictionaryHit = EnDictionary.Contains(lower) || EnDictionary.Contains(lowerTrimmed);
+        if (sourceDictionaryHit)
             return null;
 
         // Try to convert EN→UA
@@ -139,56 +131,55 @@ public static class CorrectionHeuristics
 
         // Reject if converted result contains non-letter characters (e.g. brackets, punctuation)
         // This prevents false positives like typing [] which maps to хї
-        if (converted.Any(c => !char.IsLetter(c)))
+        if (converted.Any(c => !char.IsLetter(c) && !KeyboardLayoutMap.IsWordConnector(c)))
             return null;
 
         string convertedLower = converted.ToLowerInvariant();
+        bool targetDictionaryHit = UaDictionary.Contains(convertedLower);
 
         // Score the converted result as Ukrainian
-        double uaScore = ScoreCyrillic(convertedLower);
-        // Score the original as "accidental English" (i.e., how implausible is it as English text)
-        double enImplausibility = 1.0 - ScoreEnglish(lower);
+        double sourceScore = ScoreEnglish(lower);
+        if (!string.Equals(lower, lowerTrimmed, StringComparison.Ordinal))
+            sourceScore = Math.Max(sourceScore, ScoreEnglish(lowerTrimmed));
+        double targetScore = ScoreCyrillic(convertedLower);
 
-        // Combined confidence: converted must be plausible UA, and original must not be good EN
-        double confidence = (uaScore * 0.6) + (enImplausibility * 0.4);
+        if (mode == CorrectionMode.Auto)
+        {
+            if (tokenLength <= 1)
+                return null;
 
-        // Boost if converted word is in UA dictionary
-        if (UaDictionary.Contains(convertedLower))
-            confidence = Math.Min(1.0, confidence + 0.25);
+            if (tokenLength == 2 && !ShouldConvertShortToken(sourceScore, targetScore, sourceDictionaryHit, targetDictionaryHit))
+                return null;
+        }
 
-        if (confidence < threshold)
+        double confidence = ComputeConfidence(
+            originalScore: sourceScore,
+            targetScore: targetScore,
+            targetDictionaryHit: targetDictionaryHit,
+            mode: mode);
+
+        if (!ShouldConvert(sourceScore, targetScore, confidence, threshold, mode, tokenLength, sourceDictionaryHit, targetDictionaryHit, sourceHasLayoutSymbols))
             return null;
 
         string full = prefix + converted + suffix;
         string fullWord = prefix + word + suffix;
         return new CorrectionCandidate(fullWord, full, CorrectionDirection.EnToUa, confidence,
-            $"Latin→UA score={uaScore:F2} enImplaus={enImplausibility:F2} conf={confidence:F2}");
+            $"Latin→UA src={sourceScore:F2} dst={targetScore:F2} conf={confidence:F2}");
     }
 
     // ─── Cyrillic word → try UA→EN ──────────────────────────────────────────
 
     private static CorrectionCandidate? EvaluateCyrillic(
-        string word, string prefix, string suffix, int letterCount,
+        string word, string prefix, string suffix, int tokenLength,
         CorrectionMode mode, double threshold)
     {
-        if (letterCount <= 2)
-        {
-            if (mode == CorrectionMode.Auto)
-            {
-                // Allow 2-letter words only if converted result is a known EN word
-                string? probe = KeyboardLayoutMap.ConvertUaToEn(word, strict: true);
-                if (probe == null || !EnDictionary.Contains(probe.ToLowerInvariant()))
-                    return null;
-                if (UaDictionary.Contains(word.ToLowerInvariant()))
-                    return null;
-            }
-        }
-
         string lower = word.ToLowerInvariant();
+        bool sourceHasLayoutSymbols = false;
 
         // If the word is a known Ukrainian word → correct layout → do NOT convert
         string lowerTrimmed = lower.TrimEnd('.', ',', ';', ':', '<', '>');
-        if (UaDictionary.Contains(lower) || UaDictionary.Contains(lowerTrimmed))
+        bool sourceDictionaryHit = UaDictionary.Contains(lower) || UaDictionary.Contains(lowerTrimmed);
+        if (sourceDictionaryHit)
             return null;
 
         // Try to convert UA→EN
@@ -197,29 +188,39 @@ public static class CorrectionHeuristics
 
         // Reject if converted result contains non-letter characters
         // This prevents false positives like хїфі → []as
-        if (converted.Any(c => !char.IsLetter(c)))
+        if (converted.Any(c => !char.IsLetter(c) && !KeyboardLayoutMap.IsWordConnector(c)))
             return null;
 
         string convertedLower = converted.ToLowerInvariant();
+        bool targetDictionaryHit = EnDictionary.Contains(convertedLower);
 
-        // Score the converted result as English
-        double enScore = ScoreEnglish(convertedLower);
-        // Score the original as "accidental Ukrainian"
-        double uaImplausibility = 1.0 - ScoreCyrillic(lower);
+        double sourceScore = ScoreCyrillic(lower);
+        if (!string.Equals(lower, lowerTrimmed, StringComparison.Ordinal))
+            sourceScore = Math.Max(sourceScore, ScoreCyrillic(lowerTrimmed));
+        double targetScore = ScoreEnglish(convertedLower);
 
-        double confidence = (enScore * 0.6) + (uaImplausibility * 0.4);
+        if (mode == CorrectionMode.Auto)
+        {
+            if (tokenLength <= 1)
+                return null;
 
-        // Boost if converted word is in EN dictionary
-        if (EnDictionary.Contains(convertedLower))
-            confidence = Math.Min(1.0, confidence + 0.25);
+            if (tokenLength == 2 && !ShouldConvertShortToken(sourceScore, targetScore, sourceDictionaryHit, targetDictionaryHit))
+                return null;
+        }
 
-        if (confidence < threshold)
+        double confidence = ComputeConfidence(
+            originalScore: sourceScore,
+            targetScore: targetScore,
+            targetDictionaryHit: targetDictionaryHit,
+            mode: mode);
+
+        if (!ShouldConvert(sourceScore, targetScore, confidence, threshold, mode, tokenLength, sourceDictionaryHit, targetDictionaryHit, sourceHasLayoutSymbols))
             return null;
 
         string full = prefix + converted + suffix;
         string fullWord = prefix + word + suffix;
         return new CorrectionCandidate(fullWord, full, CorrectionDirection.UaToEn, confidence,
-            $"Cyrillic→EN score={enScore:F2} uaImplaus={uaImplausibility:F2} conf={confidence:F2}");
+            $"Cyrillic→EN src={sourceScore:F2} dst={targetScore:F2} conf={confidence:F2}");
     }
 
     // ─── Scoring functions ───────────────────────────────────────────────────
@@ -236,6 +237,8 @@ public static class CorrectionHeuristics
         // Check for non-Latin characters
         if (lower.Any(c => char.IsLetter(c) && c >= 128)) return 0.0;
 
+        double ngramScore = EnProfile.Score(lower);
+
         // Bigram scoring
         int bigramCount = 0, bigramHits = 0;
         for (int i = 0; i < lower.Length - 1; i++)
@@ -251,8 +254,12 @@ public static class CorrectionHeuristics
 
         // Consonant/vowel ratio check (English: ~40% vowels)
         double cvScore = ConsonantVowelScore(lower, isEnglish: true);
+        double score = Clamp01((ngramScore * 0.58) + (bigramScore * 0.18) + (cvScore * 0.24));
 
-        return (bigramScore * 0.5) + (cvScore * 0.5);
+        if (lower.Any(KeyboardLayoutMap.IsLayoutLetterChar))
+            score *= 0.42;
+
+        return Clamp01(score);
     }
 
     /// <summary>Scores how plausible a lowercase string is as Ukrainian text (0.0–1.0).</summary>
@@ -266,6 +273,8 @@ public static class CorrectionHeuristics
 
         // Check for non-Cyrillic characters
         if (lower.Any(c => char.IsLetter(c) && (c < '\u0400' || c > '\u04FF'))) return 0.0;
+
+        double ngramScore = UaProfile.Score(lower);
 
         // Bigram scoring
         int bigramCount = 0, bigramHits = 0;
@@ -283,7 +292,79 @@ public static class CorrectionHeuristics
         // Consonant/vowel ratio check (Ukrainian: ~40-50% vowels)
         double cvScore = ConsonantVowelScore(lower, isEnglish: false);
 
-        return (bigramScore * 0.5) + (cvScore * 0.5);
+        return Clamp01((ngramScore * 0.58) + (bigramScore * 0.18) + (cvScore * 0.24));
+    }
+
+    private static bool ShouldConvert(
+        double originalScore,
+        double targetScore,
+        double confidence,
+        double threshold,
+        CorrectionMode mode,
+        int tokenLength,
+        bool sourceDictionaryHit,
+        bool targetDictionaryHit,
+        bool sourceHasLayoutSymbols)
+    {
+        double delta = targetScore - originalScore;
+        double deltaThreshold = mode == CorrectionMode.Auto ? AutoDeltaThreshold : SafeDeltaThreshold;
+        double targetFloor = mode == CorrectionMode.Auto ? AutoTargetFloor : SafeTargetFloor;
+
+        if (targetScore >= targetFloor
+            && delta >= deltaThreshold
+            && confidence >= threshold)
+            return true;
+
+        if (mode != CorrectionMode.Auto)
+            return false;
+
+        if (targetDictionaryHit && !sourceDictionaryHit && targetScore >= 0.32 && delta >= 0.03 && confidence >= 0.28)
+            return true;
+
+        if (tokenLength >= 4 && !sourceDictionaryHit && targetScore >= 0.37 && delta >= 0.04 && confidence >= 0.30)
+            return true;
+
+        if (tokenLength >= 3
+            && sourceHasLayoutSymbols
+            && !sourceDictionaryHit
+            && targetScore >= 0.18
+            && delta >= 0.08
+            && confidence >= 0.18)
+            return true;
+
+        return false;
+    }
+
+    private static bool ShouldConvertShortToken(
+        double originalScore,
+        double targetScore,
+        bool sourceDictionaryHit,
+        bool targetDictionaryHit)
+    {
+        if (sourceDictionaryHit)
+            return false;
+
+        if (targetDictionaryHit)
+            return true;
+
+        return targetScore >= 0.43 && originalScore <= 0.14;
+    }
+
+    private static double ComputeConfidence(
+        double originalScore,
+        double targetScore,
+        bool targetDictionaryHit,
+        CorrectionMode mode)
+    {
+        double delta = Math.Max(0.0, targetScore - originalScore);
+        double confidence = (targetScore * 0.52)
+            + ((1.0 - originalScore) * 0.18)
+            + (delta * 0.30);
+
+        if (targetDictionaryHit)
+            confidence += mode == CorrectionMode.Auto ? 0.08 : 0.12;
+
+        return Clamp01(confidence);
     }
 
     private static readonly HashSet<char> EnVowels = new() { 'a','e','i','o','u' };
@@ -310,6 +391,16 @@ public static class CorrectionHeuristics
         return 1.0;
     }
 
+    private static double Clamp01(double value)
+    {
+        if (value < 0) return 0;
+        if (value > 1) return 1;
+        return value;
+    }
+
+    private static int CountTokenChars(string text) =>
+        text.Count(c => char.IsLetter(c) || KeyboardLayoutMap.IsLayoutLetterChar(c));
+
     // ─── Punctuation stripping ───────────────────────────────────────────────
 
     // Characters that look like punctuation but ARE keyboard keys mapping to UA letters:
@@ -318,18 +409,133 @@ public static class CorrectionHeuristics
     // These must NOT be stripped as trailing/leading punctuation, otherwise words like
     // "ndj]" (typed in EN while meaning "твої") lose their last letter,
     // or "cd'nj." loses the trailing "ю" (свєтою → свєто).
-    private static readonly HashSet<char> KeyboardLetterChars = new()
-        { '[', ']', '{', '}', '\\', '|', '.', ',', ';', ':', '<', '>' };
-
     private static string StripPunctuation(string word, out string prefix, out string suffix)
     {
         int start = 0, end = word.Length;
-        while (start < end && !char.IsLetterOrDigit(word[start]) && !KeyboardLetterChars.Contains(word[start]))
+        while (start < end
+               && !char.IsLetterOrDigit(word[start])
+               && !KeyboardLayoutMap.IsLayoutLetterChar(word[start])
+               && !KeyboardLayoutMap.IsWordConnector(word[start]))
             start++;
-        while (end > start && !char.IsLetterOrDigit(word[end - 1]) && !KeyboardLetterChars.Contains(word[end - 1]))
+        while (end > start
+               && !char.IsLetterOrDigit(word[end - 1])
+               && !KeyboardLayoutMap.IsLayoutLetterChar(word[end - 1])
+               && !KeyboardLayoutMap.IsWordConnector(word[end - 1]))
             end--;
         prefix = word[..start];
         suffix = word[end..];
         return word[start..end];
+    }
+
+    private sealed class NgramProfile
+    {
+        private readonly Dictionary<string, int> _unigrams;
+        private readonly Dictionary<string, int> _bigrams;
+        private readonly Dictionary<string, int> _trigrams;
+        private readonly double _maxUnigram;
+        private readonly double _maxBigram;
+        private readonly double _maxTrigram;
+
+        private NgramProfile(
+            Dictionary<string, int> unigrams,
+            Dictionary<string, int> bigrams,
+            Dictionary<string, int> trigrams,
+            double maxUnigram,
+            double maxBigram,
+            double maxTrigram)
+        {
+            _unigrams = unigrams;
+            _bigrams = bigrams;
+            _trigrams = trigrams;
+            _maxUnigram = maxUnigram;
+            _maxBigram = maxBigram;
+            _maxTrigram = maxTrigram;
+        }
+
+        public static NgramProfile Build(IEnumerable<string> words)
+        {
+            var unigrams = new Dictionary<string, int>(StringComparer.Ordinal);
+            var bigrams = new Dictionary<string, int>(StringComparer.Ordinal);
+            var trigrams = new Dictionary<string, int>(StringComparer.Ordinal);
+
+            foreach (string word in words)
+            {
+                string normalized = Normalize(word);
+                if (normalized.Length == 0)
+                    continue;
+
+                CountNgrams(normalized, 1, unigrams);
+
+                if (normalized.Length < 2)
+                    continue;
+
+                string padded = $"^{normalized}$";
+                CountNgrams(padded, 2, bigrams);
+                CountNgrams(padded, 3, trigrams);
+            }
+
+            double maxUnigram = unigrams.Count == 0 ? 1.0 : unigrams.Values.Max();
+            double maxBigram = bigrams.Count == 0 ? 1.0 : bigrams.Values.Max();
+            double maxTrigram = trigrams.Count == 0 ? 1.0 : trigrams.Values.Max();
+            return new NgramProfile(unigrams, bigrams, trigrams, maxUnigram, maxBigram, maxTrigram);
+        }
+
+        public double Score(string word)
+        {
+            string normalized = Normalize(word);
+            if (normalized.Length == 0)
+                return 0.0;
+
+            double unigramScore = AverageMatchScore(normalized, 1, _unigrams, _maxUnigram);
+            if (normalized.Length == 1)
+                return unigramScore;
+
+            string padded = $"^{normalized}$";
+            double bigramScore = AverageMatchScore(padded, 2, _bigrams, _maxBigram);
+            double trigramScore = AverageMatchScore(padded, 3, _trigrams, _maxTrigram);
+
+            if (normalized.Length == 2)
+                return (unigramScore * 0.40) + (bigramScore * 0.60);
+
+            if (normalized.Length == 3)
+                return (unigramScore * 0.24) + (bigramScore * 0.40) + (trigramScore * 0.36);
+
+            return (unigramScore * 0.14) + (bigramScore * 0.32) + (trigramScore * 0.54);
+        }
+
+    private static string Normalize(string word) =>
+        new string(word
+                .ToLowerInvariant()
+                .Where(c => char.IsLetter(c) || KeyboardLayoutMap.IsWordConnector(c))
+                .ToArray());
+
+        private static void CountNgrams(string text, int size, Dictionary<string, int> counts)
+        {
+            for (int i = 0; i <= text.Length - size; i++)
+            {
+                string gram = text.Substring(i, size);
+                counts.TryGetValue(gram, out int current);
+                counts[gram] = current + 1;
+            }
+        }
+
+        private static double AverageMatchScore(string text, int size, Dictionary<string, int> counts, double maxCount)
+        {
+            if (text.Length < size || counts.Count == 0)
+                return 0.0;
+
+            double total = 0.0;
+            int grams = 0;
+
+            for (int i = 0; i <= text.Length - size; i++)
+            {
+                string gram = text.Substring(i, size);
+                counts.TryGetValue(gram, out int count);
+                total += count <= 0 ? 0.0 : Math.Sqrt(count / maxCount);
+                grams++;
+            }
+
+            return grams == 0 ? 0.0 : total / grams;
+        }
     }
 }

@@ -16,6 +16,7 @@ public class AppSettings
     public bool CancelOnBackspace { get; set; } = true;
     public bool CancelOnLeftArrow { get; set; } = true;
     public List<string> ExcludedProcessNames { get; set; } = new();
+    public List<string> ExcludedWords { get; set; } = new();
     public HotkeyDescriptor SafeLastWordHotkey { get; set; } = new(Modifiers: 6, VirtualKey: 0x4B); // Ctrl+Shift+K
     public HotkeyDescriptor SafeSelectionHotkey { get; set; } = new(Modifiers: 6, VirtualKey: 0x4C); // Ctrl+Shift+L
 }

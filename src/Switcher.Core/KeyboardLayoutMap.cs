@@ -69,6 +69,8 @@ public static class KeyboardLayoutMap
         {
             if (EnToUaMap.TryGetValue(c, out char mapped))
                 sb.Append(mapped);
+            else if (IsWordConnector(c))
+                sb.Append(c);
             else if (!strict)
                 sb.Append(c);   // pass through unmapped (digits, spaces, etc.)
             else
@@ -88,12 +90,99 @@ public static class KeyboardLayoutMap
         {
             if (UaToEnMap.TryGetValue(c, out char mapped))
                 sb.Append(mapped);
+            else if (IsWordConnector(c))
+                sb.Append(c);
             else if (!strict)
                 sb.Append(c);
             else
                 return null;
         }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Toggles every mappable character between EN and UA keyboard layouts.
+    /// Latin chars become Ukrainian, Ukrainian chars become Latin, everything else stays as-is.
+    /// </summary>
+    public static string ToggleLayoutText(string input, out int changedCount)
+    {
+        changedCount = 0;
+        var sb = new StringBuilder(input.Length);
+        foreach (char c in input)
+        {
+            if (EnToUaMap.TryGetValue(c, out char uaChar))
+            {
+                sb.Append(uaChar);
+                changedCount++;
+            }
+            else if (UaToEnMap.TryGetValue(c, out char enChar))
+            {
+                sb.Append(enChar);
+                changedCount++;
+            }
+            else
+            {
+                sb.Append(c);
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Returns true when the character is a non-letter keyboard key that maps directly to a UA letter.
+    /// Examples: ], [, ;, ,, ., '.
+    /// </summary>
+    public static bool IsLayoutLetterChar(char c) =>
+        EnToUaMap.ContainsKey(c) && !char.IsLetter(c);
+
+    public static bool IsWordConnector(char c) =>
+        c is '-' or '’' or 'ʼ' or '\'';
+
+    /// <summary>
+    /// Trims surrounding punctuation but keeps keyboard symbols that represent letters in the opposite layout.
+    /// </summary>
+    public static string NormalizeWordToken(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return string.Empty;
+
+        string value = text.Trim();
+        int start = 0;
+        int end = value.Length;
+
+        while (start < end && !char.IsLetterOrDigit(value[start]) && !IsLayoutLetterChar(value[start]) && !IsWordConnector(value[start]))
+            start++;
+
+        while (end > start && !char.IsLetterOrDigit(value[end - 1]) && !IsLayoutLetterChar(value[end - 1]) && !IsWordConnector(value[end - 1]))
+            end--;
+
+        if (end <= start)
+            return string.Empty;
+
+        return value[start..end].ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Returns all normalized layout-equivalent forms for the same token.
+    /// If the input is added as either "привіт" or "ghbdsn", both forms are considered equivalent.
+    /// </summary>
+    public static IReadOnlyCollection<string> GetEquivalentLayoutForms(string? text)
+    {
+        string normalized = NormalizeWordToken(text);
+        if (string.IsNullOrEmpty(normalized))
+            return Array.Empty<string>();
+
+        var forms = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            normalized
+        };
+
+        string toggled = ToggleLayoutText(normalized, out int changedCount).ToLowerInvariant();
+        if (changedCount > 0 && !string.Equals(normalized, toggled, StringComparison.OrdinalIgnoreCase))
+            forms.Add(toggled);
+
+        return forms.ToArray();
     }
 
     /// <summary>Returns true if all word characters (letters) in the string are Latin.</summary>
@@ -113,7 +202,12 @@ public static class KeyboardLayoutMap
         bool hasLatin = false, hasCyrillic = false;
         foreach (char c in text)
         {
-            if (!char.IsLetter(c)) continue;
+            if (!char.IsLetter(c))
+            {
+                if (IsLayoutLetterChar(c))
+                    hasLatin = true;
+                continue;
+            }
             if (c < 128) hasLatin = true;
             else if (c >= '\u0400' && c <= '\u04FF') hasCyrillic = true;
             else return ScriptType.Other;

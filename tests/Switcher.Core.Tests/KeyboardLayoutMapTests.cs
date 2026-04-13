@@ -205,6 +205,24 @@ public class KeyboardLayoutMapTests
         Assert.Equal(expected, KeyboardLayoutMap.ClassifyScript(input));
     }
 
+    [Theory]
+    [InlineData("]]", ScriptType.Latin)]
+    [InlineData(",elt", ScriptType.Latin)]
+    [InlineData(";bnnz", ScriptType.Latin)]
+    public void ClassifyScript_LayoutLetterSymbolsStillCountAsLatin(string input, ScriptType expected)
+    {
+        Assert.Equal(expected, KeyboardLayoutMap.ClassifyScript(input));
+    }
+
+    [Theory]
+    [InlineData("gf-gf", "па-па")]
+    [InlineData("rjine'", "коштує")]
+    public void ConvertEnToUa_AllowsWordConnectorsInStrictMode(string en, string ua)
+    {
+        var result = KeyboardLayoutMap.ConvertEnToUa(en, strict: true);
+        Assert.Equal(ua, result);
+    }
+
     // ─── Punctuation keys mapping to UA letters ──────────────────────────────
 
     [Theory]
@@ -218,5 +236,30 @@ public class KeyboardLayoutMapTests
     {
         var result = KeyboardLayoutMap.ConvertEnToUa(en, strict: true);
         Assert.Equal(ua, result);
+    }
+
+    [Theory]
+    [InlineData("ghbdsn", "привіт", 6)]
+    [InlineData("руддщ", "hello", 5)]
+    [InlineData("hello руддщ", "руддщ hello", 10)]
+    [InlineData("123 !", "123 !", 0)]
+    public void ToggleLayoutText_TogglesPerCharacterAndCountsChanges(string input, string expected, int expectedChangedCount)
+    {
+        var result = KeyboardLayoutMap.ToggleLayoutText(input, out int changedCount);
+
+        Assert.Equal(expected, result);
+        Assert.Equal(expectedChangedCount, changedCount);
+    }
+
+    [Theory]
+    [InlineData(" привіт ", "привіт", "ghbdsn")]
+    [InlineData("ghbdsn", "ghbdsn", "привіт")]
+    [InlineData("];f", "];f", "їжа")]
+    public void GetEquivalentLayoutForms_ReturnsBothLayoutVariants(string input, string expectedNormalized, string expectedToggled)
+    {
+        var forms = KeyboardLayoutMap.GetEquivalentLayoutForms(input);
+
+        Assert.Contains(expectedNormalized, forms);
+        Assert.Contains(expectedToggled, forms);
     }
 }

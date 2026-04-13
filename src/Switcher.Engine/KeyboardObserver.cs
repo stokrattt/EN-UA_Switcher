@@ -82,6 +82,29 @@ public class KeyboardObserver : IDisposable
     private bool IsCancelOnBackspace => _settings?.Current.CancelOnBackspace ?? true;
     private bool IsCancelOnLeftArrow => _settings?.Current.CancelOnLeftArrow ?? true;
 
+    private bool IsConfiguredSafeHotkeyChord(uint vk)
+    {
+        if (_settings == null)
+            return false;
+
+        return MatchesHotkey(_settings.Current.SafeLastWordHotkey, vk)
+            || MatchesHotkey(_settings.Current.SafeSelectionHotkey, vk);
+    }
+
+    private bool MatchesHotkey(HotkeyDescriptor hotkey, uint vk)
+    {
+        if (hotkey.VirtualKey != vk)
+            return false;
+
+        bool requiresCtrl = (hotkey.Modifiers & 2) != 0;
+        bool requiresAlt = (hotkey.Modifiers & 1) != 0;
+        bool requiresShift = (hotkey.Modifiers & 4) != 0;
+
+        return _ctrlHeld == requiresCtrl
+            && _altHeld == requiresAlt
+            && _shiftHeld == requiresShift;
+    }
+
     /// <summary>EN interpretation of the last completed word.</summary>
     public string CurrentWordEN => _lastWordEN;
     /// <summary>UA interpretation of the last completed word.</summary>
@@ -123,6 +146,54 @@ public class KeyboardObserver : IDisposable
         _lastWordEN = "";
         _lastWordUA = "";
         _lastVkDebug = "";
+    }
+
+    /// <summary>
+    /// Returns the word currently adjacent to the caret as it is expected to appear on screen.
+    /// Prefers the in-progress buffered word and falls back to the last completed word.
+    /// </summary>
+    public string GetVisibleWordNearCaret(ForegroundContext? context = null)
+    {
+        string buffered = GetVisibleBufferedWord(context);
+        if (!string.IsNullOrEmpty(buffered))
+            return buffered;
+
+        return LastLayoutWasUkrainian ? _lastWordUA : _lastWordEN;
+    }
+
+    private string GetVisibleBufferedWord(ForegroundContext? context)
+    {
+        if (_scanBuffer.Count == 0)
+            return string.Empty;
+
+        string en = PickBestEN(_scanBuffer);
+        string ua = PickBestUA(_scanBuffer);
+        bool useUkrainian = TryIsUkrainianLayout(context, out bool ukrainianLayout)
+            ? ukrainianLayout
+            : LastLayoutWasUkrainian;
+
+        string preferred = useUkrainian ? ua : en;
+        string fallback = useUkrainian ? en : ua;
+        return !string.IsNullOrEmpty(preferred) ? preferred : fallback;
+    }
+
+    private static bool TryIsUkrainianLayout(ForegroundContext? context, out bool ukrainianLayout)
+    {
+        ukrainianLayout = false;
+
+        IntPtr hwnd = context?.FocusedControlHwnd ?? IntPtr.Zero;
+        if (hwnd == IntPtr.Zero)
+            hwnd = context?.Hwnd ?? IntPtr.Zero;
+        if (hwnd == IntPtr.Zero)
+            return false;
+
+        uint threadId = NativeMethods.GetWindowThreadProcessId(hwnd, out _);
+        if (threadId == 0)
+            return false;
+
+        IntPtr hkl = NativeMethods.GetKeyboardLayout(threadId);
+        ukrainianLayout = ((long)hkl & 0xFFFF) == 0x0422;
+        return true;
     }
 
     /// <summary>Clears the scan buffer and fires BufferCleared if there was content.</summary>
@@ -357,6 +428,9 @@ public class KeyboardObserver : IDisposable
                     // to focus Chrome address bar would insert 'l' into the buffer.
                     if (_ctrlHeld || _altHeld)
                     {
+                        if (IsConfiguredSafeHotkeyChord(vk))
+                            return NativeMethods.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+
                         // Some Ctrl shortcuts change the text (Ctrl+A selects all, then next key
                         // replaces selection). Clear buffer since we can't track the text state.
                         ClearScanBuffer($"Modifier+key (vk=0x{vk:X2})");

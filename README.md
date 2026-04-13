@@ -1,102 +1,210 @@
-# Switcher — EN/UA Keyboard Layout Corrector
+# Switcher
 
-A Windows desktop app that detects text typed in the wrong keyboard layout (English / Ukrainian) and corrects it — either automatically or via hotkeys.
+Switcher is a Windows tray app for switching mistyped English/Ukrainian text.
 
-Typed `руддщ` instead of `hello`? Switcher fixes it for you.
+If you type `руддщ` instead of `hello`, Switcher can fix it automatically after a delimiter or manually through global hotkeys.
 
-## Features
+## What It Does
+
+- Auto-corrects the last typed word on `Space`, `Enter`, or `Tab`
+- Fixes the last word or selected text with global hotkeys
+- Works with native Win32 editors, many browser inputs, and a range of Electron apps
+- Keeps a live diagnostics log for troubleshooting
+- Supports process exclusions and word exclusions
+- Lets you undo the last auto-correction with `Backspace`
+
+## Modes
 
 ### Auto Mode
 
-- Monitors keystrokes in real time via a low-level keyboard hook
-- When you press **Space**, **Enter**, or **Tab**, the last word is evaluated
-- If the word looks like it was typed in the wrong layout, it's replaced instantly
-- Dictionary-backed heuristics for both EN→UA and UA→EN directions
-- Strict mode option for higher-confidence corrections only
+Auto Mode watches the current word buffer and decides whether the word should be layout-switched.
 
-### Safe Mode (Manual Hotkeys)
+- It evaluates both `EN` and `UA` interpretations of the typed token
+- It uses a local scoring model with layout mapping, short-text heuristics, character patterns, and dictionary boosts
+- It does not rely on a giant hardcoded word list alone
+- It only runs on delimiter keys that you enable in settings
 
-| Hotkey           | Action                                 |
-| ---------------- | -------------------------------------- |
-| **Ctrl+Shift+K** | Correct the last word before the caret |
-| **Ctrl+Shift+L** | Correct the selected text              |
+Example:
 
-### Other
+- typed: `руддщ`
+- auto-corrected to: `hello`
 
-- System tray icon with quick access to settings, diagnostics, and mode toggle
-- Per-process exclusion list (skip correction in specific apps)
-- Undo last correction with Backspace
-- Cancel pending correction with Backspace or Left Arrow
-- Diagnostics window showing real-time correction logs
-- Settings persist across restarts (`%APPDATA%\Switcher\settings.json`)
-- Start minimized to tray option
+### Safe Hotkeys
 
-## Supported Targets
+Safe hotkeys do not "think". They always do a direct layout toggle.
 
-| Target                                               | Status                                        |
-| ---------------------------------------------------- | --------------------------------------------- |
-| Notepad, WordPad, classic Win32 EDIT/RichEdit        | ✅ Fully supported (both modes)               |
-| Electron apps (Telegram, VS Code, Slack, etc.)       | ✅ Safe mode works, Auto mode works via SendInput |
-| Browser text inputs (Chrome, Edge)                   | ⚠️ Safe mode works; Auto mode uses clipboard fallback (Chrome sends fake scan codes) |
-| contenteditable, Monaco, CodeMirror (in browsers)    | ⚠️ Safe mode works; Auto mode experimental    |
+| Hotkey | Action |
+| --- | --- |
+| `Ctrl+Shift+K` | Toggle the last word before the caret |
+| `Ctrl+Shift+L` | Toggle the selected text |
 
-## Requirements
+This path is intentionally dumb and deterministic:
 
-- Windows 10/11
+- no language detection
+- no heuristics
+- no confidence threshold
 
-## Download & Run
+## Tray Menu
 
-Go to [Releases](https://github.com/stokrattt/KyboardSwitcher_EN_UA/releases) and download:
+Switcher runs in the system tray.
 
-- **`Switcher.App.exe`** (self-contained, ~155 MB) — works without installing anything, just double-click
-- **`Switcher.App-small.exe`** (~300 KB) — requires [.NET 8.0 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) installed
+From the tray menu you can:
 
-## Build from Source
+- open the settings window
+- toggle `Auto Mode`
+- open diagnostics
+- exit the app
 
-```bash
-dotnet build Switcher.sln
-dotnet run --project src/Switcher.App
-```
-
-## Project Structure
-
-```
-src/
-  Switcher.Core/          # Heuristics, dictionaries, layout maps, settings
-  Switcher.Engine/        # Keyboard hook, auto/safe mode handlers, input simulation
-  Switcher.Infrastructure/# Win32 interop, text target adapters (native + UI Automation)
-  Switcher.App/           # WPF application, tray icon, settings UI, diagnostics window
-  Switcher.TestTarget/    # WinForms test app for manual testing
-tests/
-  Switcher.Core.Tests/    # Unit tests for heuristics and layout mapping
-  Switcher.Engine.Tests/  # Unit tests for input simulation
-```
+Double-clicking the tray icon opens settings.
 
 ## Settings
 
-All settings are configurable from the Settings window (double-click tray icon):
+The settings window has 4 tabs.
 
-| Setting              | Default | Description                                           |
-| -------------------- | ------- | ----------------------------------------------------- |
-| Auto Mode            | Off     | Enable automatic correction on word boundaries        |
-| Strict Auto Mode     | On      | Require higher confidence for auto corrections        |
-| Correct on Space     | On      | Trigger auto correction when Space is pressed         |
-| Correct on Enter     | On      | Trigger auto correction when Enter is pressed         |
-| Correct on Tab       | Off     | Trigger auto correction when Tab is pressed           |
-| Cancel on Backspace  | On      | Cancel pending correction when Backspace is pressed   |
-| Cancel on Left Arrow | On      | Cancel pending correction when Left Arrow is pressed  |
-| Undo on Backspace    | On      | Undo last correction with Backspace immediately after |
-| Start Minimized      | On      | Start the app minimized to the system tray            |
-| Diagnostics          | On      | Log correction events to the diagnostics window       |
+### General
 
-## How It Works
+- `Enable Auto Mode`: turns automatic correction on or off
+- `Correct on Space`: tries auto-correction when `Space` is pressed
+- `Correct on Enter`: tries auto-correction when `Enter` is pressed
+- `Correct on Tab`: tries auto-correction when `Tab` is pressed
+- `Cancel on Backspace`: clears the current word buffer so pending auto-correction will not fire
+- `Cancel on Left Arrow`: same idea when you move the caret left
+- `Undo correction on Backspace`: immediately rolls back the last auto-correction
+- `Start minimized to system tray`: app starts hidden
+- `Enable diagnostics logging`: enables the diagnostics window and file logging
 
-1. A global `WH_KEYBOARD_LL` hook captures every keystroke
-2. Keys are buffered until a word boundary (space/enter/tab) is detected
-3. The buffered scan codes are mapped to both EN and UA characters using `MapVirtualKeyEx`
-4. `CorrectionHeuristics.Evaluate()` checks both interpretations against built-in dictionaries
-5. If a correction is found, the original text is selected and replaced via `SendInput` (or clipboard fallback for browsers)
-6. The keyboard layout is switched to match the corrected text direction
+### Hotkeys
+
+- Shows whether global hotkeys are currently registered
+- Shows the current hotkey bindings
+- Current defaults are:
+  - `Ctrl+Shift+K` for the last word
+  - `Ctrl+Shift+L` for selected text
+
+### Exclusions
+
+There are two exclusion lists.
+
+- `Excluded processes`: disables all correction logic inside selected apps
+  - add from the running process list
+  - add manually by process name without `.exe`
+  - remove selected items from the visible list
+- `Excluded words`: disables Auto Mode for specific words
+  - add the word in either layout
+  - the opposite layout form is excluded too
+  - safe hotkeys still work because they are manual
+
+Example:
+
+- add `привіт`
+- `ghbdsn` will also be skipped by Auto Mode
+
+### About
+
+Contains a short summary, supported targets, hotkey reminder, and contact info.
+
+## Diagnostics
+
+Diagnostics help explain why a correction happened or why it was skipped.
+
+The diagnostics window shows:
+
+- process name
+- adapter used
+- operation type
+- original text
+- converted text
+- result
+- reason
+
+When file logging is enabled, logs are written to:
+
+- `%APPDATA%\Switcher\switcher-yyyy-MM-dd.log`
+
+Settings are stored in:
+
+- `%APPDATA%\Switcher\settings.json`
+
+## Supported Targets
+
+| Target | Status |
+| --- | --- |
+| Notepad, WordPad, classic `EDIT` / `RichEdit` controls | Good support in Auto Mode and hotkeys |
+| Browser text inputs and textareas | Usually good, with UIA and clipboard fallback paths |
+| Electron apps such as Telegram, Element, Codex-like editors | Mixed runtime quality depending on the editor control |
+| `contenteditable`, Monaco, CodeMirror and similar custom web editors | Weakest path, especially in Auto Mode |
+
+## Known Limitations
+
+- Auto Mode still works through injected input and replacement paths, so in some editors you may briefly see the word tail move or flicker
+- Browser and Electron behavior depends on what the target exposes through UI Automation, selection APIs, and clipboard behavior
+- Custom editors are much less predictable than native text boxes
+- One-letter words are intentionally handled conservatively in Auto Mode to avoid breaking normal English typing
+
+## Download
+
+Ready-to-run binaries are published on the GitHub releases page:
+
+- [Releases](https://github.com/stokrattt/KyboardSwitcher_EN_UA/releases)
+
+## Build From Source
+
+Requirements:
+
+- Windows 10 or 11
+- .NET 8 SDK
+
+Build:
+
+```powershell
+dotnet build .\src\Switcher.App\Switcher.App.csproj -v minimal
+```
+
+Run from source:
+
+```powershell
+dotnet run --project .\src\Switcher.App\Switcher.App.csproj
+```
+
+Run tests:
+
+```powershell
+dotnet test .\tests\Switcher.Core.Tests\Switcher.Core.Tests.csproj -v minimal
+dotnet test .\tests\Switcher.Engine.Tests\Switcher.Engine.Tests.csproj -v minimal
+```
+
+## Where The EXE Is
+
+This repo is configured to place the app build output into the repository-level `bin` folder.
+
+After a normal build, the main executable is typically here:
+
+- `bin\Switcher.App.exe`
+
+Other build outputs such as `.dll`, `.pdb`, and runtime config files are placed in the same folder.
+
+If you create a separate self-contained publish, that output will be in the publish directory you choose.
+
+## Project Structure
+
+```text
+src/
+  Switcher.App/             WPF UI, tray menu, diagnostics window
+  Switcher.Core/            settings, heuristics, dictionaries, layout mapping
+  Switcher.Engine/          keyboard hook, auto mode, safe mode, exclusions
+  Switcher.Infrastructure/  Win32 interop, UIA/native adapters, input replacement
+  Switcher.TestTarget/      manual test app
+tests/
+  Switcher.Core.Tests/      heuristics and layout mapping tests
+  Switcher.Engine.Tests/    runtime-path and input simulation tests
+```
+
+## Security / Privacy Notes
+
+- The app does not require cloud services
+- The app does not use API tokens
+- Settings and optional diagnostics logs are stored locally under `%APPDATA%\Switcher`
+- Diagnostics are intended for troubleshooting, not for capturing full documents
 
 ## License
 

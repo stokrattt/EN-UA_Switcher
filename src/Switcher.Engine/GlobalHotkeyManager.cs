@@ -12,95 +12,184 @@ public class GlobalHotkeyManager : IDisposable
 {
     private const int HotkeyIdLastWord = 1;
     private const int HotkeyIdSelection = 2;
+    private const uint WM_APP_RELOAD_HOTKEYS = 0x8000 + 1;
+    private const uint WM_APP_EXIT_HOTKEYS = 0x8000 + 2;
+    private readonly IHotkeyPlatform _platform;
 
     private Thread? _messageThread;
-    private IntPtr _hwnd = IntPtr.Zero;
+    private uint _messageThreadId;
     private volatile bool _running;
+    private readonly ManualResetEventSlim _startupReady = new(false);
 
     private HotkeyDescriptor _lastWordHotkey;
     private HotkeyDescriptor _selectionHotkey;
 
     public event Action? LastWordHotkeyPressed;
     public event Action? SelectionHotkeyPressed;
+    public bool IsRegistered { get; private set; }
+    public string? LastRegistrationError { get; private set; }
 
     public GlobalHotkeyManager(HotkeyDescriptor lastWordHotkey, HotkeyDescriptor selectionHotkey)
+        : this(lastWordHotkey, selectionHotkey, new Win32HotkeyPlatform())
+    {
+    }
+
+    internal GlobalHotkeyManager(
+        HotkeyDescriptor lastWordHotkey,
+        HotkeyDescriptor selectionHotkey,
+        IHotkeyPlatform platform)
     {
         _lastWordHotkey = lastWordHotkey;
         _selectionHotkey = selectionHotkey;
+        _platform = platform;
     }
 
     public void Start()
     {
         if (_messageThread != null) return;
         _running = true;
+        IsRegistered = false;
+        LastRegistrationError = null;
+        _startupReady.Reset();
         _messageThread = new Thread(MessageLoop) { IsBackground = true, Name = "HotkeyMsgLoop" };
+        _messageThread.SetApartmentState(ApartmentState.STA);
         _messageThread.Start();
+        _startupReady.Wait(TimeSpan.FromSeconds(2));
     }
 
     public void Stop()
     {
         _running = false;
-        if (_hwnd != IntPtr.Zero)
+        if (_messageThreadId != 0)
         {
-            NativeMethods.UnregisterHotKey(_hwnd, HotkeyIdLastWord);
-            NativeMethods.UnregisterHotKey(_hwnd, HotkeyIdSelection);
-            // Post WM_QUIT to unblock message loop
-            PostQuitMessage();
+            _platform.PostThreadMessage(_messageThreadId, unchecked((int)WM_APP_EXIT_HOTKEYS), IntPtr.Zero, IntPtr.Zero);
         }
         _messageThread?.Join(2000);
         _messageThread = null;
+        _messageThreadId = 0;
+        IsRegistered = false;
     }
 
     public void UpdateHotkeys(HotkeyDescriptor lastWord, HotkeyDescriptor selection)
     {
         _lastWordHotkey = lastWord;
         _selectionHotkey = selection;
-        if (_hwnd != IntPtr.Zero)
+        if (_messageThreadId != 0)
         {
-            NativeMethods.UnregisterHotKey(_hwnd, HotkeyIdLastWord);
-            NativeMethods.UnregisterHotKey(_hwnd, HotkeyIdSelection);
-            RegisterAll();
+            _platform.PostThreadMessage(_messageThreadId, unchecked((int)WM_APP_RELOAD_HOTKEYS), IntPtr.Zero, IntPtr.Zero);
         }
     }
 
     private void MessageLoop()
     {
-        // Create a message-only window for receiving WM_HOTKEY
-        _hwnd = CreateMessageWindow();
-        if (_hwnd == IntPtr.Zero) return;
+        _messageThreadId = NativeMethods.GetCurrentThreadId();
+        EnsureMessageQueue();
 
         RegisterAll();
+        _startupReady.Set();
 
-        while (_running && GetMessage(out var msg))
+        while (_running)
         {
+            int getMessageResult = GetMessage(out var msg);
+            if (getMessageResult <= 0)
+                break;
+
             if (msg.message == NativeMethods.WM_HOTKEY)
             {
                 int id = (int)(msg.wParam.ToInt64());
                 if (id == HotkeyIdLastWord) LastWordHotkeyPressed?.Invoke();
                 else if (id == HotkeyIdSelection) SelectionHotkeyPressed?.Invoke();
             }
+            else if (ProcessControlMessage(msg.message))
+            {
+                if (msg.message == WM_APP_EXIT_HOTKEYS)
+                    break;
+                continue;
+            }
             TranslateAndDispatch(ref msg);
         }
-
-        DestroyMessageWindow(_hwnd);
-        _hwnd = IntPtr.Zero;
     }
 
     private void RegisterAll()
     {
-        if (_hwnd == IntPtr.Zero) return;
-        NativeMethods.RegisterHotKey(_hwnd, HotkeyIdLastWord,
+        IsRegistered = false;
+        LastRegistrationError = null;
+
+        bool lastWordRegistered = _platform.RegisterHotKey(IntPtr.Zero, HotkeyIdLastWord,
             _lastWordHotkey.Modifiers | NativeMethods.MOD_NOREPEAT, _lastWordHotkey.VirtualKey);
-        NativeMethods.RegisterHotKey(_hwnd, HotkeyIdSelection,
+        int lastWordError = lastWordRegistered ? 0 : _platform.GetLastWin32Error();
+
+        bool selectionRegistered = _platform.RegisterHotKey(IntPtr.Zero, HotkeyIdSelection,
             _selectionHotkey.Modifiers | NativeMethods.MOD_NOREPEAT, _selectionHotkey.VirtualKey);
+        int selectionError = selectionRegistered ? 0 : _platform.GetLastWin32Error();
+
+        if (lastWordRegistered && selectionRegistered)
+        {
+            IsRegistered = true;
+            return;
+        }
+
+        if (lastWordRegistered)
+            _platform.UnregisterHotKey(IntPtr.Zero, HotkeyIdLastWord);
+        if (selectionRegistered)
+            _platform.UnregisterHotKey(IntPtr.Zero, HotkeyIdSelection);
+
+        string lastWordStatus = lastWordRegistered
+            ? $"{_lastWordHotkey.FriendlyName}=OK"
+            : $"{_lastWordHotkey.FriendlyName}=error {lastWordError}";
+        string selectionStatus = selectionRegistered
+            ? $"{_selectionHotkey.FriendlyName}=OK"
+            : $"{_selectionHotkey.FriendlyName}=error {selectionError}";
+        LastRegistrationError = $"Global hotkeys unavailable: {lastWordStatus}; {selectionStatus}. " +
+            "Another app or another Switcher instance may already be using them.";
     }
+
+    private void UnregisterAll()
+    {
+        _platform.UnregisterHotKey(IntPtr.Zero, HotkeyIdLastWord);
+        _platform.UnregisterHotKey(IntPtr.Zero, HotkeyIdSelection);
+        IsRegistered = false;
+    }
+
+    private bool ProcessControlMessage(uint message)
+    {
+        if (message == WM_APP_RELOAD_HOTKEYS)
+        {
+            UnregisterAll();
+            RegisterAll();
+            return true;
+        }
+
+        if (message == WM_APP_EXIT_HOTKEYS)
+        {
+            UnregisterAll();
+            return true;
+        }
+
+        return false;
+    }
+
+    internal void RegisterAllForTesting(IntPtr hwnd)
+    {
+        if (_messageThreadId == 0)
+            _messageThreadId = 1;
+        RegisterAll();
+    }
+
+    internal void ProcessControlMessageForTesting(uint message)
+    {
+        ProcessControlMessage(message);
+    }
+
+    internal static uint ReloadMessageForTesting => WM_APP_RELOAD_HOTKEYS;
+    internal static uint ExitMessageForTesting => WM_APP_EXIT_HOTKEYS;
 
     // ─── Win32 message loop plumbing ─────────────────────────────────────────
     [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool GetMessage(out MSG msg, IntPtr hWnd = default, uint wMsgFilterMin = 0, uint wMsgFilterMax = 0);
+    private static extern int GetMessage(out MSG msg, IntPtr hWnd = default, uint wMsgFilterMin = 0, uint wMsgFilterMax = 0);
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern void PostQuitMessage(int nExitCode = 0);
+    private static extern bool PeekMessage(out MSG msg, IntPtr hWnd, uint min, uint max, uint removeMsg);
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool TranslateMessage(ref MSG msg);
@@ -114,26 +203,11 @@ public class GlobalHotkeyManager : IDisposable
         DispatchMessage(ref msg);
     }
 
-    // Message-only window
-    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
-    private static extern IntPtr CreateWindowEx(uint dwExStyle, string lpClassName, string lpWindowName,
-        uint dwStyle, int x, int y, int nWidth, int nHeight, IntPtr hWndParent, IntPtr hMenu,
-        IntPtr hInstance, IntPtr lpParam);
+    private const uint PM_NOREMOVE = 0x0000;
 
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool DestroyWindow(IntPtr hWnd);
-
-    private static readonly IntPtr HWND_MESSAGE = new(-3);
-
-    private static IntPtr CreateMessageWindow()
+    private static void EnsureMessageQueue()
     {
-        return CreateWindowEx(0, "STATIC", "SwitcherHotkey",
-            0, 0, 0, 0, 0, HWND_MESSAGE, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
-    }
-
-    private static void DestroyMessageWindow(IntPtr hwnd)
-    {
-        if (hwnd != IntPtr.Zero) DestroyWindow(hwnd);
+        PeekMessage(out _, IntPtr.Zero, 0, 0, PM_NOREMOVE);
     }
 
     [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
@@ -152,4 +226,27 @@ public class GlobalHotkeyManager : IDisposable
         Stop();
         GC.SuppressFinalize(this);
     }
+}
+
+internal interface IHotkeyPlatform
+{
+    bool RegisterHotKey(IntPtr hwnd, int id, uint modifiers, uint virtualKey);
+    bool UnregisterHotKey(IntPtr hwnd, int id);
+    bool PostThreadMessage(uint threadId, int msg, IntPtr wParam, IntPtr lParam);
+    int GetLastWin32Error();
+}
+
+internal sealed class Win32HotkeyPlatform : IHotkeyPlatform
+{
+    public bool RegisterHotKey(IntPtr hwnd, int id, uint modifiers, uint virtualKey) =>
+        NativeMethods.RegisterHotKey(hwnd, id, modifiers, virtualKey);
+
+    public bool UnregisterHotKey(IntPtr hwnd, int id) =>
+        NativeMethods.UnregisterHotKey(hwnd, id);
+
+    public bool PostThreadMessage(uint threadId, int msg, IntPtr wParam, IntPtr lParam) =>
+        NativeMethods.PostThreadMessage(threadId, msg, wParam, lParam);
+
+    public int GetLastWin32Error() =>
+        System.Runtime.InteropServices.Marshal.GetLastWin32Error();
 }
