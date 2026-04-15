@@ -143,9 +143,15 @@ Settings are stored in:
 
 ## Download
 
-Ready-to-run binaries are published on the GitHub releases page:
+Portable release artifacts are published on the GitHub releases page:
 
-- [Releases](https://github.com/stokrattt/KyboardSwitcher_EN_UA/releases)
+- [Releases](https://github.com/stokrattt/EN-UA_Switcher/releases)
+
+Release notes:
+
+- `bin\Switcher.App.exe` is only the normal build output for local development
+- `EN-UA-Switcher.exe` is the full self-contained Windows build and does not require a separate .NET install
+- `EN-UA-Switcher-small.exe` is the smaller runtime-dependent build and requires the .NET 8 Desktop Runtime
 
 ## Build From Source
 
@@ -158,6 +164,12 @@ Build:
 
 ```powershell
 dotnet build .\src\Switcher.App\Switcher.App.csproj -v minimal
+```
+
+Create a portable release package:
+
+```powershell
+.\scripts\publish-release.ps1
 ```
 
 Run from source:
@@ -183,7 +195,15 @@ After a normal build, the main executable is typically here:
 
 Other build outputs such as `.dll`, `.pdb`, and runtime config files are placed in the same folder.
 
-If you create a separate self-contained publish, that output will be in the publish directory you choose.
+This file is not the packaged end-user release by itself.
+
+To create the actual release artifact, run the publish script above. It creates:
+
+- `artifacts\release\EN-UA-Switcher.exe`
+- `artifacts\release\EN-UA-Switcher-small.exe`
+- `artifacts\release\SHA256SUMS.txt`
+
+The GitHub Actions release workflow uses the same script when you push a `v*` tag.
 
 ## Project Structure
 

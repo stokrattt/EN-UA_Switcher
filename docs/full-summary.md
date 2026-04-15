@@ -4,7 +4,7 @@
 
 **Switcher** is a Windows desktop app (.NET 8.0, WPF) that detects when text is typed in the wrong keyboard layout (English QWERTY / Ukrainian ЙЦУКЕН) and corrects it automatically or on demand via hotkeys. It runs as a system tray application.
 
-**Repository:** https://github.com/stokrattt/KyboardSwitcher_EN_UA
+**Repository:** https://github.com/stokrattt/EN-UA_Switcher
 
 ---
 

@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build release artifacts
+        shell: pwsh
+        run: .\scripts\publish-release.ps1 -Version "${{ github.ref_name }}"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/release/EN-UA-Switcher.exe
+            artifacts/release/EN-UA-Switcher-small.exe
+            artifacts/release/SHA256SUMS.txt
+            artifacts/release/release-manifest.txt
+          generate_release_notes: true

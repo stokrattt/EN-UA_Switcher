@@ -36,3 +36,4 @@ TestResults/
 # Publish output
 publish/
 publish-full/
+artifacts/
