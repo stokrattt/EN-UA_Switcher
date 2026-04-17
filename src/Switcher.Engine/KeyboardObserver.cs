@@ -644,6 +644,9 @@ public class KeyboardObserver : IDisposable
     /// Picks the best EN interpretation: prefers scan-code-based, but falls back
     /// to VK-based if scan codes produced non-letter garbage for a word that should
     /// be all letters (VK codes are letters but scan codes aren't).
+    /// NOTE: digits are NOT considered garbage — "Nora1234" scan result is correct
+    /// and must not be replaced by VK-only "Nora", which would hide digits from
+    /// wordContainsDigits detection and cause clipboard-fallback side-effects.
     /// </summary>
     private static string PickBestEN(List<(uint scan, uint rawScan, uint vk, bool shift, uint flags)> buffer)
     {
@@ -657,11 +660,12 @@ public class KeyboardObserver : IDisposable
         // If VK says it's all letters but scan produced characters that are NOT
         // keyboard-mapped chars (chars like [, ], \, ;, etc. map to UA letters
         // х, ї, ж, etc. and must NOT be dropped) → scan codes are wrong.
-        // Only prefer VK if scan has genuine garbage (digits, symbols that don't
-        // map to any UA letter).
+        // Only prefer VK if scan has genuine garbage (symbols that don't map to any
+        // UA letter AND are not digits). Digits are valid typed characters — preserving
+        // them in wordEN is essential for wordContainsDigits detection to work correctly.
         bool vkAllLetters = vkEN.Length > 0 && vkEN.All(char.IsLetter);
         bool scanHasGarbage = scanEN.Length > 0 && scanEN.Any(c =>
-            !char.IsLetter(c)
+            !char.IsLetterOrDigit(c)          // digits are NOT garbage
             && !KeyboardLayoutMap.IsLayoutLetterChar(c)
             && !KeyboardLayoutMap.IsWordConnector(c));
         if (vkAllLetters && scanHasGarbage)

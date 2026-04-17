@@ -83,6 +83,12 @@ public class AutoModeHandler
         // clipboard fallback is the ONLY viable path.
         bool chromeGarbage = seqScans >= 3;
 
+        // True when the typed word contains digits (e.g. "Win11", "Office365").
+        // VK-only path silently drops digit VK codes (0x30–0x39), producing a shorter
+        // string than what is actually in the editor. Layer 2 must be skipped for such
+        // words to prevent incorrect Backspace count (the "WiWin" bug).
+        bool wordContainsDigits = wordEN.Any(char.IsDigit) || wordUA.Any(char.IsDigit);
+
         // Original: short decoded words (visible in UI column)
         string originalDisplay = $"{wordEN} | {wordUA}";
         // Technical detail for Reason column (wider)
@@ -165,7 +171,11 @@ public class AutoModeHandler
         // Chrome sends COMPLETELY FAKE sequential scan AND VK codes.
         // Both scan-based and VK-based interpretations are garbage.
         // Skip L1/L2 entirely, go straight to clipboard fallback.
-        if (chromeGarbage && approxWordLength >= 3)
+        // Exception: words with digits (e.g. "Win11", "Office365") — clipboard fallback
+        // triggers Shift+Left selection which can cause side-effects in Electron apps
+        // like Obsidian (e.g. "Win11" → "Win "). Since CorrectionHeuristics would reject
+        // digit-containing words anyway, just skip clipboard fallback for them entirely.
+        if (chromeGarbage && approxWordLength >= 3 && !wordContainsDigits)
         {
             if (!TryBeginAutoOperation(proc, cls, originalDisplay,
                     $"Skipped Chromium fallback: previous auto operation still in progress {techDetail} [{rawDebug}]"))
@@ -205,7 +215,7 @@ public class AutoModeHandler
         {
             // Layer 1 found a candidate — proceed to replacement (below)
         }
-        else if (approxWordLength >= 3 && (recCount > 0 || droppedKeys > 0))
+        else if (approxWordLength >= 3 && (recCount > 0 || droppedKeys > 0) && !wordContainsDigits)
         {
             // ─── Layer 2: VK-only re-evaluation ─────────────────────────────
             // Buffer data may be unreliable (scan recovery or dropped keys).
@@ -273,11 +283,15 @@ public class AutoModeHandler
         string replacementCore = TrimLiteralTrailingSuffix(replacement, visibleTrailingSuffix);
         string originalCore = TrimLiteralTrailingSuffix(original, visibleTrailingSuffix);
 
+        // Use approxWordLength as erase count when actual key count exceeds decoded text length.
+        // This prevents under-erasing when digits or other non-VK-mapped chars were present.
+        int eraseCount = Math.Max(approxWordLength - visibleTrailingSuffix.Length, originalCore.Length);
+
         Task.Run(() =>
         {
             try
             {
-                var inputs = BuildAutoReplacementInputs(originalCore, replacementCore, visibleTrailingSuffix);
+                var inputs = BuildAutoReplacementInputs(originalCore, replacementCore, visibleTrailingSuffix, eraseCount);
 
                 uint sent = NativeMethods.SendInput((uint)inputs.Length, inputs,
                     Marshal.SizeOf<NativeMethods.INPUT>());
@@ -759,11 +773,16 @@ public class AutoModeHandler
         return text;
     }
 
-    private static NativeMethods.INPUT[] BuildAutoReplacementInputs(string originalCore, string replacementCore, string trailingSuffix)
+    private static NativeMethods.INPUT[] BuildAutoReplacementInputs(
+        string originalCore, string replacementCore, string trailingSuffix,
+        int? eraseCountOverride = null)
     {
         var modifierRelease = NativeMethods.BuildModifierReleaseInputs();
         int suffixLen = trailingSuffix.Length;
-        int totalInputs = modifierRelease.Length + (suffixLen * 2) + (originalCore.Length * 2) + (replacementCore.Length * 2) + (suffixLen * 2);
+        // eraseCountOverride allows the caller to erase more characters than originalCore.Length,
+        // e.g. when the typed word contained digits that were stripped by the VK-only path.
+        int eraseCount = eraseCountOverride ?? originalCore.Length;
+        int totalInputs = modifierRelease.Length + (suffixLen * 2) + (eraseCount * 2) + (replacementCore.Length * 2) + (suffixLen * 2);
         var inputs = new NativeMethods.INPUT[totalInputs];
         int idx = 0;
 
@@ -776,7 +795,7 @@ public class AutoModeHandler
             inputs[idx++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: true);
         }
 
-        for (int i = 0; i < originalCore.Length; i++)
+        for (int i = 0; i < eraseCount; i++)
         {
             inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: false);
             inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: true);

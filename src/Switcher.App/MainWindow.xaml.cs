@@ -49,6 +49,7 @@ public partial class MainWindow : Window
         ChkCancelOnLeftArrow.IsChecked = s.CancelOnLeftArrow;
         ChkUndoOnBackspace.IsChecked = s.UndoOnBackspace;
         ChkStartMinimized.IsChecked = s.StartMinimized;
+        ChkRunAtStartup.IsChecked = s.RunAtStartup;
         ChkDiagnostics.IsChecked = s.DiagnosticsEnabled;
         TxtLastWordHotkey.Text = s.SafeLastWordHotkey.FriendlyName;
         TxtSelectionHotkey.Text = s.SafeSelectionHotkey.FriendlyName;
@@ -89,6 +90,7 @@ public partial class MainWindow : Window
         s.CancelOnLeftArrow = ChkCancelOnLeftArrow.IsChecked == true;
         s.UndoOnBackspace = ChkUndoOnBackspace.IsChecked == true;
         s.StartMinimized = ChkStartMinimized.IsChecked == true;
+        s.RunAtStartup = ChkRunAtStartup.IsChecked == true;
         s.DiagnosticsEnabled = ChkDiagnostics.IsChecked == true;
         s.ExcludedProcessNames = _exclusions.ToList();
         s.ExcludedWords = _excludedWords.ToList();
