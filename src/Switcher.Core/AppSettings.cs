@@ -8,6 +8,7 @@ public class AppSettings
     public bool AutoModeEnabled { get; set; } = false;
     public bool DiagnosticsEnabled { get; set; } = true;
     public bool StartMinimized { get; set; } = true;
+    public bool RunAtStartup { get; set; } = false;
     public bool StrictAutoMode { get; set; } = true;
     public bool UndoOnBackspace { get; set; } = true;
     public bool CorrectOnSpace { get; set; } = true;

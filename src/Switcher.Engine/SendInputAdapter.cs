@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Threading;
+using Switcher.Core;
 using Switcher.Infrastructure;
 
 namespace Switcher.Engine;
@@ -29,18 +30,17 @@ public class SendInputAdapter : ITextTargetAdapter
         "Windows.UI.Core.CoreWindow"
     };
 
-    private static readonly HashSet<string> WordSelectionProcesses = new(StringComparer.OrdinalIgnoreCase)
+    // Real Chromium browsers — Safe-mode word-selection replace strategy.
+    // Electron desktop apps are covered separately through
+    // <see cref="ElectronProcessCatalog"/> (single source of truth) to avoid
+    // two lists drifting apart.
+    private static readonly HashSet<string> BrowserWordSelectionProcesses = new(StringComparer.OrdinalIgnoreCase)
     {
         "chrome",
         "msedge",
         "brave",
         "opera",
-        "vivaldi",
-        "telegram",
-        "codex",
-        "element",
-        "slack",
-        "code"
+        "vivaldi"
     };
 
     private readonly KeyboardObserver _observer;
@@ -144,7 +144,8 @@ public class SendInputAdapter : ITextTargetAdapter
             : context.FocusedControlClass;
 
         return WordSelectionClasses.Contains(cls)
-            || WordSelectionProcesses.Contains(context.ProcessName);
+            || BrowserWordSelectionProcesses.Contains(context.ProcessName)
+            || ElectronProcessCatalog.IsElectronProcess(context.ProcessName);
     }
 
     private static NativeMethods.INPUT[] BuildBackspaceReplaceInputs(int backCount, string replacement)

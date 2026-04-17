@@ -143,6 +143,28 @@ public class KeyboardObserver : IDisposable
     /// </summary>
     public int LastSequentialScanCount { get; private set; }
 
+    // ─── User-typing activity signal ─────────────────────────────────────────
+    // Monotonically increasing counter bumped on every non-injected,
+    // non-modifier key-DOWN. Async Auto-mode fallbacks snapshot this value at
+    // start and compare later to detect "user kept typing" and abort safely
+    // (collapsing any Shift+Left selection before the user's next keystroke
+    // overwrites the selected word in Electron / Chromium apps).
+    private long _userKeyDownCounter;
+
+    /// <summary>
+    /// Snapshot of the user-typing activity counter. Incremented on every
+    /// non-injected, non-modifier key-down event processed by the hook.
+    /// Use <see cref="HasUserTypedSince"/> to detect new input since a prior snapshot.
+    /// </summary>
+    public long UserKeyDownCounter => Interlocked.Read(ref _userKeyDownCounter);
+
+    /// <summary>
+    /// Returns true when the user has pressed at least one non-modifier key
+    /// since the <paramref name="snapshot"/> was captured via
+    /// <see cref="UserKeyDownCounter"/>.
+    /// </summary>
+    public bool HasUserTypedSince(long snapshot) => UserKeyDownCounter != snapshot;
+
     /// <summary>Clears the saved completed word.</summary>
     public void ClearBuffer()
     {
@@ -311,6 +333,14 @@ public class KeyboardObserver : IDisposable
             // Buffer logic: only process non-injected key-down events
             if (!injected && (msg == NativeMethods.WM_KEYDOWN || msg == NativeMethods.WM_SYSKEYDOWN))
             {
+                // ─── User-typing activity signal ─────────────────────────────
+                // Bump the activity counter for ANY non-modifier, non-lock
+                // key-down. Used by async Auto-mode fallbacks to detect that
+                // the user kept typing and abort before their next keystroke
+                // overwrites a Shift+Left selection (Electron race).
+                if (!IsModifierOrLockVk(vk))
+                    Interlocked.Increment(ref _userKeyDownCounter);
+
                 // ─── Focus change detection ──────────────────────────────────
                 // If the foreground APPLICATION changed (different PID), clear buffer.
                 // We compare PIDs, not HWNDs, because Chrome has internal popup
@@ -644,6 +674,9 @@ public class KeyboardObserver : IDisposable
     /// Picks the best EN interpretation: prefers scan-code-based, but falls back
     /// to VK-based if scan codes produced non-letter garbage for a word that should
     /// be all letters (VK codes are letters but scan codes aren't).
+    /// NOTE: digits are NOT considered garbage — "Nora1234" scan result is correct
+    /// and must not be replaced by VK-only "Nora", which would hide digits from
+    /// wordContainsDigits detection and cause clipboard-fallback side-effects.
     /// </summary>
     private static string PickBestEN(List<(uint scan, uint rawScan, uint vk, bool shift, uint flags)> buffer)
     {
@@ -657,11 +690,12 @@ public class KeyboardObserver : IDisposable
         // If VK says it's all letters but scan produced characters that are NOT
         // keyboard-mapped chars (chars like [, ], \, ;, etc. map to UA letters
         // х, ї, ж, etc. and must NOT be dropped) → scan codes are wrong.
-        // Only prefer VK if scan has genuine garbage (digits, symbols that don't
-        // map to any UA letter).
+        // Only prefer VK if scan has genuine garbage (symbols that don't map to any
+        // UA letter AND are not digits). Digits are valid typed characters — preserving
+        // them in wordEN is essential for wordContainsDigits detection to work correctly.
         bool vkAllLetters = vkEN.Length > 0 && vkEN.All(char.IsLetter);
         bool scanHasGarbage = scanEN.Length > 0 && scanEN.Any(c =>
-            !char.IsLetter(c)
+            !char.IsLetterOrDigit(c)          // digits are NOT garbage
             && !KeyboardLayoutMap.IsLayoutLetterChar(c)
             && !KeyboardLayoutMap.IsWordConnector(c));
         if (vkAllLetters && scanHasGarbage)

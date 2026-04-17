@@ -97,6 +97,7 @@ public class SwitcherEngine : IDisposable
     public void ApplySettings()
     {
         Settings.Save();
+        StartupHelper.SetStartup(Settings.Current.RunAtStartup);
         Diagnostics.Configure(Settings.Current.DiagnosticsEnabled);
         _hotkeyManager?.UpdateHotkeys(
             Settings.Current.SafeLastWordHotkey,

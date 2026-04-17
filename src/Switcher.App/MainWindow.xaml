@@ -117,6 +117,8 @@
                                                Text="A few practical toggles for startup behavior and troubleshooting."
                                                Margin="0,0,0,8" />
 
+                                    <CheckBox x:Name="ChkRunAtStartup"
+                                              Content="Run at Windows startup" />
                                     <CheckBox x:Name="ChkStartMinimized"
                                               Content="Start minimized to system tray" />
                                     <CheckBox x:Name="ChkDiagnostics"
@@ -377,7 +379,7 @@
                                     <TextBlock Text="BUILD" Style="{StaticResource EyebrowTextStyle}" />
                                      <TextBlock Text="Version" Style="{StaticResource SectionHeaderStyle}" />
                                      <TextBlock Style="{StaticResource MutedTextStyle}"
-                                                Text="1.2.0 — build 13-Apr-2026" />
+                                                Text="1.2.3 — build 16-Apr-2026" />
                                  </StackPanel>
                              </Border>
                         </StackPanel>

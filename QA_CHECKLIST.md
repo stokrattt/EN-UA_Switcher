@@ -53,6 +53,23 @@ Status legend:
 | Browser fallback | Browser path serializes operations and falls back UIA -> clipboard | PASS (auto) / RISK | Logic covered, real Chrome behavior still needs manual pass |
 | Custom editors | `contenteditable` / Monaco / CodeMirror | MANUAL / RISK | Unit tests cannot prove these contexts |
 
+## 4a. Auto mode — Electron selection-race regression
+
+These scenarios target the bug where in Electron apps (VS Code, Slack, Discord,
+Teams, Obsidian) the previous word was briefly selected after Space and, if the
+user continued typing, was overwritten by the next character.
+
+| Area | Case | Method | Status | Notes |
+| --- | --- | --- | --- | --- |
+| Electron / VS Code | Type `ghbdsn ghbdsn ghbdsn ` rapidly (no pauses). None of the words gets eaten by the next letter. | MANUAL | UIA path expected; diagnostics log shows `UIA fallback (UIA read + SendInput write)` |
+| Electron / Slack | Type a mistyped EN word, press Space, immediately type the next word. No word-selection flash; correction either applies cleanly or is skipped — never truncated. | MANUAL | Slack Draft.js composer → UIA ReadOnly → SendInput write |
+| Electron / Discord | Same as Slack. | MANUAL | |
+| Electron / Obsidian | Type `Win11 ` — does NOT collapse to `Win `. | MANUAL | Digit-containing words skip L2; Electron path skips clipboard fallback. |
+| Electron skip | When UIA cannot resolve the word in an Electron app, the delimiter is still injected (space appears), but no selection flash occurs. Diagnostics log shows `Electron: UIA unavailable — auto-correction skipped to avoid selection race`. | MANUAL | |
+| Cancellation | In Chromium browsers (chrome/edge), keep typing through a pending clipboard fallback. Selection (if any) is collapsed with VK_RIGHT and log shows `Clipboard fallback aborted: user kept typing`. | MANUAL | Cancellation is checked around every sleep. |
+| Chromium browser regression | In Chrome address bar / Gmail compose: auto-correction still works for `ghbdsn` → `привіт` + Space. | MANUAL | BrowserAutoFallback path untouched. |
+| Safe mode regression | In Notepad and Chrome, press the Safe hotkey to correct the last word. Works as before (atomic Shift+Left+Type). | MANUAL | SendInputAdapter changes are catalog-unification only. |
+
 ## 5. Safe hotkeys
 
 | Area | Case | Method | Status | Notes |
