@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Windows.Automation;
 using System.Windows.Automation.Text;
+using Switcher.Core;
 
 namespace Switcher.Infrastructure;
 
@@ -53,9 +54,14 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
         // Don't compete with native edit adapter
         if (NativeEditClasses.Contains(cls)) return TargetSupport.Unsupported;
 
-        // Be conservative outside real browsers. Electron apps often expose ValuePattern
-        // but behave poorly on SetValue/caret restore, so prefer SendInput fallback there.
-        if (!BrowserProcesses.Contains(context.ProcessName))
+        // Allowed targets for UIA:
+        //   • Real Chromium browsers (ValuePattern works reliably for <input>/<textarea>).
+        //   • Electron desktop apps (ValuePattern often works for text inputs; when it
+        //     doesn't, TextPattern read + SendInput write gives us a safe path that
+        //     avoids the Shift+Left selection race).
+        bool isBrowser = BrowserProcesses.Contains(context.ProcessName);
+        bool isElectron = ElectronProcessCatalog.IsElectronProcess(context.ProcessName);
+        if (!isBrowser && !isElectron)
             return TargetSupport.Unsupported;
 
         // Try to get UIA element and check for writable ValuePattern
@@ -73,9 +79,16 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
             if (element.TryGetCurrentPattern(ValuePattern.Pattern, out object? vp))
             {
                 var valuePattern = (ValuePattern)vp;
-                return valuePattern.Current.IsReadOnly
-                    ? TargetSupport.ReadOnly
-                    : TargetSupport.Full;
+                if (valuePattern.Current.IsReadOnly)
+                    return TargetSupport.ReadOnly;
+
+                // Electron: even when ValuePattern is writable, SetValue often
+                // destroys rich formatting or caret state (Monaco, contenteditable
+                // wrappers, Slack's Draft.js composer). Treat as read-only so
+                // callers prefer SendInput Backspace+Unicode replacement — which
+                // also avoids the Shift+Left selection race that spawned this
+                // Electron-specific code path in the first place.
+                return isElectron ? TargetSupport.ReadOnly : TargetSupport.Full;
             }
 
             // TextPattern alone (no ValuePattern) → read-only for our purposes
@@ -268,8 +281,26 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
         {
             var element = AutomationElement.FocusedElement;
             if (element == null) return null;
-            if (!element.TryGetCurrentPattern(ValuePattern.Pattern, out object? vp)) return null;
-            return ((ValuePattern)vp).Current.Value;
+
+            // Prefer ValuePattern — precise Value string with original formatting.
+            if (element.TryGetCurrentPattern(ValuePattern.Pattern, out object? vp))
+            {
+                string? v = ((ValuePattern)vp).Current.Value;
+                if (!string.IsNullOrEmpty(v))
+                    return v;
+            }
+
+            // TextPattern fallback: works for Electron / contenteditable / Monaco
+            // cases where ValuePattern is missing or returns empty. We only need
+            // the text to detect the last word, not to round-trip formatting.
+            if (element.TryGetCurrentPattern(TextPattern.Pattern, out object? tp))
+            {
+                var textPattern = (TextPattern)tp;
+                string text = textPattern.DocumentRange.GetText(10000);
+                return string.IsNullOrEmpty(text) ? null : text;
+            }
+
+            return null;
         }
         catch { return null; }
     }

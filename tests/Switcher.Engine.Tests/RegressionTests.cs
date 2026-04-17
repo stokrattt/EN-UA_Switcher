@@ -538,7 +538,8 @@ public class AutoModeHandlerPunctuationRegressionTests
         var method = typeof(AutoModeHandler)
             .GetMethod("BuildAutoReplacementInputs", BindingFlags.NonPublic | BindingFlags.Static)!;
 
-        return (NativeMethods.INPUT[])method.Invoke(null, [originalCore, replacementCore, suffix])!;
+        // eraseCountOverride parameter is optional (int?), provide null for default behavior
+        return (NativeMethods.INPUT[])method.Invoke(null, [originalCore, replacementCore, suffix, null])!;
     }
 
     private static string InvokeStripVisibleSuffixFromInterpretation(string text, string suffix)

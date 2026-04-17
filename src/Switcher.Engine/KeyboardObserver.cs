@@ -143,6 +143,28 @@ public class KeyboardObserver : IDisposable
     /// </summary>
     public int LastSequentialScanCount { get; private set; }
 
+    // ─── User-typing activity signal ─────────────────────────────────────────
+    // Monotonically increasing counter bumped on every non-injected,
+    // non-modifier key-DOWN. Async Auto-mode fallbacks snapshot this value at
+    // start and compare later to detect "user kept typing" and abort safely
+    // (collapsing any Shift+Left selection before the user's next keystroke
+    // overwrites the selected word in Electron / Chromium apps).
+    private long _userKeyDownCounter;
+
+    /// <summary>
+    /// Snapshot of the user-typing activity counter. Incremented on every
+    /// non-injected, non-modifier key-down event processed by the hook.
+    /// Use <see cref="HasUserTypedSince"/> to detect new input since a prior snapshot.
+    /// </summary>
+    public long UserKeyDownCounter => Interlocked.Read(ref _userKeyDownCounter);
+
+    /// <summary>
+    /// Returns true when the user has pressed at least one non-modifier key
+    /// since the <paramref name="snapshot"/> was captured via
+    /// <see cref="UserKeyDownCounter"/>.
+    /// </summary>
+    public bool HasUserTypedSince(long snapshot) => UserKeyDownCounter != snapshot;
+
     /// <summary>Clears the saved completed word.</summary>
     public void ClearBuffer()
     {
@@ -311,6 +333,14 @@ public class KeyboardObserver : IDisposable
             // Buffer logic: only process non-injected key-down events
             if (!injected && (msg == NativeMethods.WM_KEYDOWN || msg == NativeMethods.WM_SYSKEYDOWN))
             {
+                // ─── User-typing activity signal ─────────────────────────────
+                // Bump the activity counter for ANY non-modifier, non-lock
+                // key-down. Used by async Auto-mode fallbacks to detect that
+                // the user kept typing and abort before their next keystroke
+                // overwrites a Shift+Left selection (Electron race).
+                if (!IsModifierOrLockVk(vk))
+                    Interlocked.Increment(ref _userKeyDownCounter);
+
                 // ─── Focus change detection ──────────────────────────────────
                 // If the foreground APPLICATION changed (different PID), clear buffer.
                 // We compare PIDs, not HWNDs, because Chrome has internal popup

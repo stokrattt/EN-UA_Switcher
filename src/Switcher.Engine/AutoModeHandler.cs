@@ -112,14 +112,25 @@ public class AutoModeHandler
                         $"Skipped empty-buffer fallback: previous auto operation still in progress {techDetail} [{rawDebug}]"))
                     return;
 
+                bool isElectron = context != null && ElectronProcessCatalog.IsElectronProcess(context.ProcessName);
                 _diagnostics.Log(proc, cls, "SendInput", false, OperationType.AutoMode,
                     originalDisplay, null, DiagnosticResult.Skipped,
-                    $"L1 empty → clipboard fallback {techDetail} [{rawDebug}]");
+                    isElectron
+                        ? $"L1 empty → Electron UIA fallback {techDetail} [{rawDebug}]"
+                        : $"L1 empty → clipboard fallback {techDetail} [{rawDebug}]");
                 _observer.SuppressCurrentDelimiter();
                 uint fallbackDelimVk = _observer.LastDelimiterVk;
                 var fallbackContext = context;
-                _ = Task.Run(() => ClipboardFallback(approxWordLength, fallbackDelimVk,
-                    fallbackContext, layoutTag, rawDebug));
+                if (isElectron)
+                {
+                    _ = Task.Run(() => ElectronAutoFallback(approxWordLength, fallbackDelimVk,
+                        fallbackContext!, layoutTag, rawDebug));
+                }
+                else
+                {
+                    _ = Task.Run(() => ClipboardFallback(approxWordLength, fallbackDelimVk,
+                        fallbackContext, layoutTag, rawDebug));
+                }
                 return;
             }
 
@@ -181,14 +192,25 @@ public class AutoModeHandler
                     $"Skipped Chromium fallback: previous auto operation still in progress {techDetail} [{rawDebug}]"))
                 return;
 
+            bool isElectron = ElectronProcessCatalog.IsElectronProcess(context.ProcessName);
             _diagnostics.Log(proc, cls, "SendInput", true, OperationType.AutoMode,
                 originalDisplay, null, DiagnosticResult.Skipped,
-                $"Sequential scans detected → clipboard fallback {techDetail} [{rawDebug}]");
+                isElectron
+                    ? $"Sequential scans in Electron → UIA fallback (no selection) {techDetail} [{rawDebug}]"
+                    : $"Sequential scans detected → clipboard fallback {techDetail} [{rawDebug}]");
             _observer.SuppressCurrentDelimiter();
             uint fallbackDelimVk = _observer.LastDelimiterVk;
             var fallbackContext = context;
-            _ = Task.Run(() => ClipboardFallback(approxWordLength, fallbackDelimVk,
-                fallbackContext, layoutTag, rawDebug));
+            if (isElectron)
+            {
+                _ = Task.Run(() => ElectronAutoFallback(approxWordLength, fallbackDelimVk,
+                    fallbackContext, layoutTag, rawDebug));
+            }
+            else
+            {
+                _ = Task.Run(() => ClipboardFallback(approxWordLength, fallbackDelimVk,
+                    fallbackContext, layoutTag, rawDebug));
+            }
             return;
         }
 
@@ -246,15 +268,26 @@ public class AutoModeHandler
                         $"Skipped clipboard fallback: previous auto operation still in progress {techDetail} [{rawDebug}]"))
                     return;
 
-                // ─── Layer 3: Clipboard fallback ────────────────────────────
+                // ─── Layer 3: Clipboard / Electron-UIA fallback ─────────────
+                bool isElectron = ElectronProcessCatalog.IsElectronProcess(context.ProcessName);
                 _diagnostics.Log(proc, cls, "SendInput", true, OperationType.AutoMode,
                     originalDisplay, null, DiagnosticResult.Skipped,
-                    $"L2 no match → clipboard fallback {techDetail} [{rawDebug}]");
+                    isElectron
+                        ? $"L2 no match → Electron UIA fallback (no selection) {techDetail} [{rawDebug}]"
+                        : $"L2 no match → clipboard fallback {techDetail} [{rawDebug}]");
                 _observer.SuppressCurrentDelimiter();
                 uint fallbackDelimVk = _observer.LastDelimiterVk;
                 var fallbackContext = context;
-                _ = Task.Run(() => ClipboardFallback(approxWordLength, fallbackDelimVk,
-                    fallbackContext, layoutTag, rawDebug));
+                if (isElectron)
+                {
+                    _ = Task.Run(() => ElectronAutoFallback(approxWordLength, fallbackDelimVk,
+                        fallbackContext, layoutTag, rawDebug));
+                }
+                else
+                {
+                    _ = Task.Run(() => ClipboardFallback(approxWordLength, fallbackDelimVk,
+                        fallbackContext, layoutTag, rawDebug));
+                }
                 return;
             }
             // candidate was found via VK-only — fall through to replacement below
@@ -352,9 +385,77 @@ public class AutoModeHandler
     }
 
     /// <summary>
+    /// Emits a single VK_RIGHT keystroke to collapse any active word selection
+    /// (made by Shift+Left×N) to the right edge. Safe no-op when nothing is selected.
+    /// Used both at the normal end of clipboard fallback AND when aborting mid-flight
+    /// because the user started typing.
+    /// </summary>
+    private static void SendDeselectRight()
+    {
+        var desel = new NativeMethods.INPUT[2];
+        desel[0] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_RIGHT, keyUp: false);
+        desel[1] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_RIGHT, keyUp: true);
+        NativeMethods.SendInput(2, desel, Marshal.SizeOf<NativeMethods.INPUT>());
+    }
+
+    /// <summary>
+    /// Electron-safe fallback. Runs on a threadpool task.
+    ///   1. Try UI Automation (read word, replace via SendInput or SetValue).
+    ///   2. If UIA can't resolve the word, SKIP auto-correction entirely
+    ///      (do NOT use clipboard select-and-copy — that causes the
+    ///      "word-briefly-selected then overwritten" bug in VS Code, Slack,
+    ///      Discord, Teams, Obsidian, etc.).
+    /// In both cases the suppressed delimiter is re-injected and the auto
+    /// operation is released.
+    /// </summary>
+    private void ElectronAutoFallback(int wordLen, uint delimVk, ForegroundContext context,
+        string layoutTag, string rawDebug)
+    {
+        try
+        {
+            // Let the Electron renderer commit the typed keys before we try to read.
+            Thread.Sleep(60);
+
+            if (TryUiAutomationFallback(context, delimVk, layoutTag, rawDebug))
+                return;
+
+            // UIA didn't resolve the word. Intentionally DO NOT run ClipboardFallback —
+            // the Shift+Left selection race is exactly what this code path avoids.
+            _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
+                "SendInput", true, OperationType.AutoMode,
+                $"keys={wordLen}", null, DiagnosticResult.Skipped,
+                $"Electron: UIA unavailable — auto-correction skipped to avoid selection race [{rawDebug}]");
+            ReinjectDelimiter(delimVk);
+        }
+        catch (Exception ex)
+        {
+            _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
+                "SendInput", false, OperationType.AutoMode,
+                "", null, DiagnosticResult.Error,
+                $"Electron fallback error: {ex.Message}");
+            ReinjectDelimiter(delimVk);
+        }
+        finally
+        {
+            EndAutoOperation();
+        }
+    }
+
+    /// <summary>
     /// Clipboard-based fallback for when the scan code buffer produces garbage.
     /// Selects the word using Shift+Left, copies via Ctrl+C, reads clipboard,
     /// evaluates heuristics on the actual screen text, and replaces if needed.
+    ///
+    /// Cancellation: we snapshot <see cref="KeyboardObserver.UserKeyDownCounter"/>
+    /// at the start, and re-check it around every sleep. If the user keeps
+    /// typing, we collapse the selection (VK_RIGHT) and abort so their
+    /// keystrokes don't overwrite the selected word. This is critical for
+    /// Chromium-based targets where the Shift+Left selection is visible and
+    /// replaceable by the next character.
+    ///
+    /// Wait budgets were tightened (40ms+60ms+60ms instead of 150+4×200) to
+    /// shrink the race window further. Real Chrome/Edge typically populate
+    /// the clipboard within one SendInput round-trip anyway.
     /// </summary>
     private void ClipboardFallback(int wordLen, uint delimVk,
         ForegroundContext? context, string layoutTag, string rawDebug)
@@ -362,18 +463,48 @@ public class AutoModeHandler
         string proc = context?.ProcessName ?? "?";
         string cls = context?.FocusedControlClass ?? "?";
 
+        // Snapshot user-typing counter at entry. If the counter moves while we
+        // work, the user is typing ahead of us and we must abort.
+        long typingSnapshot = _observer.UserKeyDownCounter;
+        bool UserKeptTyping() => _observer.HasUserTypedSince(typingSnapshot);
+
+        bool selectionActive = false;
+        string? savedClipboard = null;
+        bool clipboardWasCleared = false;
+
+        void AbortDueToUserTyping(string where)
+        {
+            if (selectionActive)
+            {
+                SendDeselectRight();
+                selectionActive = false;
+            }
+            if (clipboardWasCleared)
+            {
+                NativeMethods.SetClipboardText(savedClipboard);
+                clipboardWasCleared = false;
+            }
+            _diagnostics.Log(proc, cls, "SendInput", true, OperationType.AutoMode,
+                $"keys={wordLen}", null, DiagnosticResult.Skipped,
+                $"Clipboard fallback aborted: user kept typing ({where}) [{rawDebug}]");
+            ReinjectDelimiter(delimVk);
+        }
+
         try
         {
-            // 0. Give the app time to finish processing the typed characters.
-            //    Chrome's async input pipeline may still be committing the last keys.
-            Thread.Sleep(150);
+            // 0. Brief pre-wait so the app can commit the typed keystrokes. Kept short
+            //    (40ms, was 150ms) because every ms of delay extends the race window.
+            Thread.Sleep(40);
+            if (UserKeptTyping()) { AbortDueToUserTyping("pre-select"); return; }
 
             if (context != null && TryUiAutomationFallback(context, delimVk, layoutTag, rawDebug))
                 return;
+            if (UserKeptTyping()) { AbortDueToUserTyping("after-UIA"); return; }
 
             // 1. Save current clipboard and CLEAR it so we can detect when copy succeeds
-            string? savedClipboard = NativeMethods.GetClipboardText();
+            savedClipboard = NativeMethods.GetClipboardText();
             NativeMethods.SetClipboardText(null);
+            clipboardWasCleared = true;
 
             // 2. Select the word: Shift held, Left×N, Shift released — ONE atomic SendInput
             //    Arrow keys MUST use KEYEVENTF_EXTENDEDKEY or Chrome ignores them.
@@ -387,9 +518,10 @@ public class AutoModeHandler
             }
             sel[si++] = NativeMethods.MakeKeyInput(NativeMethods.VK_SHIFT, keyUp: true);
             NativeMethods.SendInput((uint)sel.Length, sel, Marshal.SizeOf<NativeMethods.INPUT>());
-            Thread.Sleep(100);
+            selectionActive = true;
 
-            // 3. Copy: Ctrl+C
+            // 3. Copy: Ctrl+C (no wait between select and copy — the atomic SendInput
+            //    guarantees ordering relative to the user's input queue).
             var copy = new NativeMethods.INPUT[4];
             copy[0] = NativeMethods.MakeKeyInput(NativeMethods.VK_CONTROL, keyUp: false);
             copy[1] = NativeMethods.MakeKeyInput(0x43 /* VK_C */, keyUp: false);
@@ -397,11 +529,14 @@ public class AutoModeHandler
             copy[3] = NativeMethods.MakeKeyInput(NativeMethods.VK_CONTROL, keyUp: true);
             NativeMethods.SendInput(4, copy, Marshal.SizeOf<NativeMethods.INPUT>());
 
-            // 4. Wait for clipboard to be populated — Chrome needs time
+            // 4. Wait (briefly) for the clipboard to populate. Budget: 40 + 60 + 60 = 160ms max.
+            //    Abort on user typing at every step so a live selection doesn't linger.
             string? selectedText = null;
-            for (int attempt = 0; attempt < 5; attempt++)
+            int[] waits = { 40, 60, 60 };
+            foreach (int wait in waits)
             {
-                Thread.Sleep(attempt == 0 ? 150 : 200);
+                Thread.Sleep(wait);
+                if (UserKeptTyping()) { AbortDueToUserTyping("clipboard-wait"); return; }
                 selectedText = NativeMethods.GetClipboardText();
                 if (!string.IsNullOrEmpty(selectedText))
                     break;
@@ -409,12 +544,11 @@ public class AutoModeHandler
 
             // 5. Restore original clipboard content
             NativeMethods.SetClipboardText(savedClipboard);
+            clipboardWasCleared = false;
 
             // 6. Deselect: press Right to collapse selection to the right end
-            var desel = new NativeMethods.INPUT[2];
-            desel[0] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_RIGHT, keyUp: false);
-            desel[1] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_RIGHT, keyUp: true);
-            NativeMethods.SendInput(2, desel, Marshal.SizeOf<NativeMethods.INPUT>());
+            SendDeselectRight();
+            selectionActive = false;
 
             if (string.IsNullOrEmpty(selectedText) || selectedText.Length < 2)
             {
@@ -453,37 +587,45 @@ public class AutoModeHandler
                 return;
             }
 
-            // 8. Replace: select the word again, then type replacement over it
+            // If the user began typing between steps 6 and 8, don't re-select and
+            // replace — that would again race the user's newly typed characters.
+            if (UserKeptTyping())
+            {
+                _diagnostics.Log(proc, cls, "SendInput", true, OperationType.AutoMode,
+                    candidate.OriginalText, null, DiagnosticResult.Skipped,
+                    $"Clipboard fallback aborted before replace: user kept typing [{rawDebug}]");
+                ReinjectDelimiter(delimVk);
+                return;
+            }
+
+            // 8. Replace: select the word again, then type replacement over it —
+            //    all in ONE SendInput batch so the user's next keystroke (if any)
+            //    arrives after the selection has already been overwritten.
             int replaceLen = trimmed.Length; // use actual text length, not key count
-            var reSel = new NativeMethods.INPUT[2 + replaceLen * 2];
+            int typeCount = candidate.ConvertedText.Length;
+            var replace = new NativeMethods.INPUT[2 + replaceLen * 2 + typeCount * 2];
             int ri = 0;
-            reSel[ri++] = NativeMethods.MakeKeyInput(NativeMethods.VK_SHIFT, keyUp: false);
+            replace[ri++] = NativeMethods.MakeKeyInput(NativeMethods.VK_SHIFT, keyUp: false);
             for (int i = 0; i < replaceLen; i++)
             {
-                reSel[ri++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: false);
-                reSel[ri++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: true);
+                replace[ri++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: false);
+                replace[ri++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: true);
             }
-            reSel[ri++] = NativeMethods.MakeKeyInput(NativeMethods.VK_SHIFT, keyUp: true);
-            NativeMethods.SendInput((uint)reSel.Length, reSel, Marshal.SizeOf<NativeMethods.INPUT>());
-            Thread.Sleep(50);
-
-            // Type replacement (overwrites selection)
-            var typeInputs = new NativeMethods.INPUT[candidate.ConvertedText.Length * 2];
-            int idx = 0;
+            replace[ri++] = NativeMethods.MakeKeyInput(NativeMethods.VK_SHIFT, keyUp: true);
             foreach (char c in candidate.ConvertedText)
             {
-                typeInputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: false);
-                typeInputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: true);
+                replace[ri++] = NativeMethods.MakeUnicodeInput(c, keyUp: false);
+                replace[ri++] = NativeMethods.MakeUnicodeInput(c, keyUp: true);
             }
-            uint sent = NativeMethods.SendInput((uint)typeInputs.Length, typeInputs,
+            uint sent = NativeMethods.SendInput((uint)replace.Length, replace,
                 Marshal.SizeOf<NativeMethods.INPUT>());
-            bool success = sent == (uint)typeInputs.Length;
+            bool success = sent == (uint)replace.Length;
 
             _diagnostics.Log(proc, cls, "SendInput", true, OperationType.AutoMode,
                 candidate.OriginalText, candidate.ConvertedText,
                 success ? DiagnosticResult.Replaced : DiagnosticResult.Error,
                 success ? $"Clipboard fallback: {candidate.Reason} layout={layoutTag}"
-                        : $"Clipboard fallback: SendInput {sent}/{typeInputs.Length}");
+                        : $"Clipboard fallback: SendInput {sent}/{replace.Length}");
 
             if (success)
             {
@@ -500,6 +642,13 @@ public class AutoModeHandler
         }
         catch (Exception ex)
         {
+            // Best-effort cleanup — leave neither a visible selection nor a stale
+            // empty clipboard.
+            if (selectionActive)
+                SendDeselectRight();
+            if (clipboardWasCleared)
+                NativeMethods.SetClipboardText(savedClipboard);
+
             _diagnostics.Log(proc, cls, "SendInput", false, OperationType.AutoMode,
                 "", null, DiagnosticResult.Error,
                 $"Clipboard fallback error: {ex.Message}");
@@ -511,12 +660,29 @@ public class AutoModeHandler
         }
     }
 
+    /// <summary>
+    /// Attempt to read the last word via UI Automation and, if a correction is warranted,
+    /// replace it without the Shift+Left selection race.
+    ///
+    /// Returns <c>true</c> when the whole auto-correction cycle completed (including
+    /// re-injecting the delimiter). Returns <c>false</c> to let the caller fall back.
+    ///
+    /// Two write modes depending on <see cref="UIAutomationTargetAdapter.CanHandle"/>:
+    ///   • <see cref="TargetSupport.Full"/> — use <c>ValuePattern.SetValue</c>.
+    ///     Appropriate for real Chromium browsers where SetValue preserves layout.
+    ///   • <see cref="TargetSupport.ReadOnly"/> — read the word via UIA, but replace it
+    ///     through SendInput (Backspace×N + Unicode typing). Used for Electron apps
+    ///     where SetValue corrupts rich editors (Monaco, Draft.js, contenteditable).
+    ///     This path never produces a visible selection, so there is no race with the
+    ///     user continuing to type.
+    /// </summary>
     private bool TryUiAutomationFallback(ForegroundContext context, uint delimVk, string layoutTag, string rawDebug)
     {
         try
         {
             var adapter = new UIAutomationTargetAdapter();
-            if (adapter.CanHandle(context) != TargetSupport.Full)
+            var support = adapter.CanHandle(context);
+            if (support != TargetSupport.Full && support != TargetSupport.ReadOnly)
                 return false;
 
             string? actualWord = adapter.TryGetLastWord(context);
@@ -537,14 +703,38 @@ public class AutoModeHandler
             if (candidate == null)
                 return false;
 
-            bool success = adapter.TryReplaceLastWord(context, candidate.ConvertedText);
+            bool success;
+            string pathTag;
+
+            if (support == TargetSupport.Full)
+            {
+                // Path A — writable ValuePattern (real browsers)
+                success = adapter.TryReplaceLastWord(context, candidate.ConvertedText);
+                pathTag = "UIA ValuePattern";
+            }
+            else
+            {
+                // Path B — UIA read + SendInput write (Electron / read-only UIA).
+                // Does NOT select anything: just Backspace×N then type the replacement.
+                // Safe from the Shift+Left race that motivated this code path.
+                string replacementCore = TrimLiteralTrailingSuffix(candidate.ConvertedText, visibleSuffix);
+                string originalCore = TrimLiteralTrailingSuffix(candidate.OriginalText, visibleSuffix);
+                int eraseCount = Math.Max(actualWord.Length - visibleSuffix.Length, originalCore.Length);
+                var inputs = BuildAutoReplacementInputs(originalCore, replacementCore, visibleSuffix, eraseCount);
+
+                uint sent = NativeMethods.SendInput((uint)inputs.Length, inputs,
+                    Marshal.SizeOf<NativeMethods.INPUT>());
+                success = sent == (uint)inputs.Length;
+                pathTag = "UIA read + SendInput write";
+            }
+
             _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
                 adapter.AdapterName, true, OperationType.AutoMode,
                 candidate.OriginalText, candidate.ConvertedText,
                 success ? DiagnosticResult.Replaced : DiagnosticResult.Error,
                 success
-                    ? $"UIA fallback: {candidate.Reason} layout={layoutTag}"
-                    : "UIA fallback: replacement failed");
+                    ? $"UIA fallback ({pathTag}): {candidate.Reason} layout={layoutTag}"
+                    : $"UIA fallback ({pathTag}): replacement failed");
 
             if (!success)
                 return false;
