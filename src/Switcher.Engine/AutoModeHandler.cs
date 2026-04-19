@@ -1,67 +1,210 @@
 using System.Runtime.InteropServices;
+using System.Windows.Automation;
 using Switcher.Core;
 using Switcher.Infrastructure;
 
 namespace Switcher.Engine;
 
-/// <summary>
-/// Handles auto-mode correction. On word boundary (Space/Enter/Tab), reads the typed word
-/// from the KeyboardObserver buffer, evaluates heuristics, and replaces via SendInput.
-///
-/// KEY DESIGN: Auto-mode does NOT use UIAutomation or any cross-process COM calls.
-/// Everything in the hook callback is instant (buffer read + heuristics = CPU-only).
-/// Only the SendInput replacement and language switch run async on a threadpool thread.
-/// This eliminates LowLevelHooksTimeout issues and works universally in all apps
-/// (Chrome, Element, Telegram, VS Code, native Win32, etc.).
-///
-/// UIAutomation is reserved for SafeMode only (user-initiated, no hook timeout concern).
-/// </summary>
 public class AutoModeHandler
 {
+    private const int BrowserValuePatternStartDelayMs = 70;
+    private const int ElectronUiaStartDelayMs = 45;
+    private const int ClipboardAssistedStartDelayMs = 150;
+
     private static readonly HashSet<string> BrowserProcesses = new(StringComparer.OrdinalIgnoreCase)
     {
-        "chrome", "msedge", "brave", "opera", "vivaldi"
+        "chrome", "msedge", "brave", "opera", "vivaldi",
+        "codex", "element", "slack", "discord", "teams"
     };
 
+    private static readonly HashSet<string> BrowserLikeWindowClasses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Chrome_WidgetWin_1", "MozillaWindowClass", "Chrome_RenderWidgetHostHWND",
+        "ApplicationFrameWindow", "Windows.UI.Core.CoreWindow"
+    };
+
+    private static readonly string[] UnsafeBrowserMarkers =
+    [
+        "contenteditable",
+        "monaco",
+        "codemirror",
+        "ace_editor",
+        "prosemirror",
+        "lexical",
+        "tox-edit-area",
+        "editor"
+    ];
+
     private readonly ForegroundContextProvider _contextProvider;
+    private readonly TextTargetCoordinator _coordinator;
     private readonly ExclusionManager _exclusions;
     private readonly DiagnosticsLogger _diagnostics;
     private readonly SettingsManager _settings;
     private readonly KeyboardObserver _observer;
 
-    // ─── Undo state ──────────────────────────────────────────────────────────
     private record UndoState(string OriginalText, string ReplacementText, CorrectionDirection Direction, uint DelimiterVk);
+
+    private sealed record BrowserSurfaceSnapshot(
+        bool HasFocusedElement,
+        bool HasWritableValuePattern,
+        bool HasTextPattern,
+        string ControlType,
+        string LocalizedControlType,
+        string ClassName,
+        string AutomationId,
+        bool UnsafeCustomEditorLike,
+        string Summary);
+
     private UndoState? _lastCorrection;
     private int _autoOperationInFlight;
 
     public AutoModeHandler(
         ForegroundContextProvider contextProvider,
+        TextTargetCoordinator coordinator,
         ExclusionManager exclusions,
         DiagnosticsLogger diagnostics,
         SettingsManager settings,
         KeyboardObserver observer)
     {
         _contextProvider = contextProvider;
+        _coordinator = coordinator;
         _exclusions = exclusions;
         _diagnostics = diagnostics;
         _settings = settings;
         _observer = observer;
     }
 
-    /// <summary>
-    /// Called synchronously from the keyboard hook when a word boundary delimiter key is pressed.
-    /// Must return FAST to avoid LowLevelHooksTimeout.
-    /// Reads word from observer buffer and evaluates heuristics synchronously (both are instant),
-    /// then offloads only the SendInput replacement to a threadpool task.
-    /// </summary>
     public void OnWordBoundary(int approxWordLength)
     {
-        if (!_settings.Current.AutoModeEnabled) return;
+        if (!_settings.Current.AutoModeEnabled)
+            return;
 
-        // Any new word boundary invalidates the undo state
         _lastCorrection = null;
 
-        // Read ALL buffer interpretations upfront for diagnostics
+        WordSnapshot? snapshot = CaptureWordSnapshot(approxWordLength);
+        if (snapshot is null)
+            return;
+
+        if (approxWordLength < 2 || (snapshot.AnalysisWordEN.Length < 2 && snapshot.AnalysisWordUA.Length < 2))
+        {
+            if (!snapshot.BufferQuality.NeedsLiveDiscovery || approxWordLength < 3)
+            {
+                LogSkip(snapshot, "AutoMode", $"Too short {snapshot.TechDetail} [{snapshot.RawDebug}]");
+                return;
+            }
+        }
+
+        if (_exclusions.IsExcluded(snapshot.ProcessName))
+        {
+            LogSkip(snapshot, "AutoMode", $"Process is excluded {snapshot.TechDetail}");
+            return;
+        }
+
+        string? unsafeContextReason = AutoContextGuards.GetUnsafeAutoCorrectionReason(
+            snapshot.ExpectedOriginalWord,
+            snapshot.CurrentSentence,
+            snapshot.ProcessName);
+        if (unsafeContextReason is not null)
+        {
+            LogSkip(snapshot, "ContextGuard", $"{unsafeContextReason} {snapshot.TechDetail}");
+            return;
+        }
+
+        if (IsExcludedAutoWord(
+                snapshot.WordEN,
+                snapshot.WordUA,
+                snapshot.VkWordEN,
+                snapshot.VkWordUA,
+                snapshot.AnalysisWordEN,
+                snapshot.AnalysisWordUA,
+                snapshot.AnalysisVkEN,
+                snapshot.AnalysisVkUA))
+        {
+            LogSkip(snapshot, "AutoMode", $"Word is excluded from Auto Mode {snapshot.TechDetail}");
+            return;
+        }
+
+        CandidateDecision decision = BuildCandidateDecision(snapshot);
+        if (!decision.ShouldReplace && !decision.RequiresLiveRuntimeRead)
+        {
+            LogSkip(snapshot, "CandidateDecision", decision.Reason);
+            return;
+        }
+
+        ReplacementPlan plan = BuildReplacementPlan(snapshot, decision);
+        if (plan.SafetyProfile == ReplacementSafetyProfile.UnsafeSkip)
+        {
+            LogSkip(snapshot, plan.AdapterName, plan.Reason);
+            return;
+        }
+
+        if (!TryBeginAutoOperation(snapshot, plan))
+            return;
+
+        _observer.SuppressCurrentDelimiter();
+        _ = Task.Run(() => ExecuteReplacementPlan(plan));
+    }
+
+    public void OnUndoRequested()
+    {
+        if (!_settings.Current.UndoOnBackspace)
+            return;
+
+        var undo = _lastCorrection;
+        if (undo is null)
+            return;
+
+        _lastCorrection = null;
+        _observer.SuppressCurrentBackspace();
+
+        var context = _contextProvider.GetCurrent();
+        Task.Run(() =>
+        {
+            try
+            {
+                var inputs = BuildUndoInputs(undo.ReplacementText, undo.OriginalText);
+                uint sent = NativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<NativeMethods.INPUT>());
+
+                if (context != null)
+                {
+                    NativeMethods.SwitchInputLanguage(
+                        context.Hwnd,
+                        context.FocusedControlHwnd,
+                        toUkrainian: undo.Direction != CorrectionDirection.EnToUa);
+                }
+
+                Thread.Sleep(30);
+                ReinjectDelimiter(undo.DelimiterVk);
+
+                _diagnostics.Log(
+                    context?.ProcessName ?? "?",
+                    context?.FocusedControlClass ?? "?",
+                    "SendInput",
+                    true,
+                    OperationType.AutoMode,
+                    undo.ReplacementText,
+                    undo.OriginalText,
+                    sent == (uint)inputs.Length ? DiagnosticResult.Replaced : DiagnosticResult.Error,
+                    "Undo via Backspace");
+            }
+            catch
+            {
+                // Undo remains best-effort.
+            }
+        });
+    }
+
+    private WordSnapshot? CaptureWordSnapshot(int approxWordLength)
+    {
+        ForegroundContext? context = _contextProvider.GetCurrent();
+        if (context is null)
+        {
+            _diagnostics.Log("?", "?", "AutoMode", false, OperationType.AutoMode,
+                _observer.CurrentWordEN + " | " + _observer.CurrentWordUA, null,
+                DiagnosticResult.Error, "Context is null");
+            return null;
+        }
+
         string wordEN = _observer.CurrentWordEN;
         string wordUA = _observer.CurrentWordUA;
         string rawDebug = _observer.LastVkDebug;
@@ -71,263 +214,975 @@ public class AutoModeHandler
         string vkEN = _observer.CurrentWordEN_VkOnly;
         string vkUA = _observer.CurrentWordUA_VkOnly;
         string visibleWord = _observer.CurrentVisibleWord;
+        var (adapter, support) = _coordinator.Resolve(context);
+        string liveWord = support == TargetSupport.Unsupported || adapter is null
+            ? string.Empty
+            : (adapter.TryGetLastWord(context) ?? string.Empty);
+        string currentSentence = support == TargetSupport.Unsupported || adapter is null
+            ? string.Empty
+            : (adapter.TryGetCurrentSentence(context) ?? string.Empty);
         string layoutTag = _observer.LastLayoutWasUkrainian ? "UA" : "EN";
-        string visibleTrailingSuffix = ResolveVisibleTrailingPunctuation(visibleWord, layoutTag == "UA" ? wordUA : wordEN, layoutTag == "UA" ? wordEN : wordUA);
+        string visibleTrailingSuffix = ResolveVisibleTrailingPunctuation(
+            liveWord,
+            visibleWord,
+            layoutTag == "UA" ? wordUA : wordEN,
+            layoutTag == "UA" ? wordEN : wordUA);
+
         string analysisWordEN = StripVisibleSuffixFromInterpretation(wordEN, visibleTrailingSuffix);
         string analysisWordUA = StripVisibleSuffixFromInterpretation(wordUA, visibleTrailingSuffix);
         string analysisVkEN = StripVisibleSuffixFromInterpretation(vkEN, visibleTrailingSuffix);
         string analysisVkUA = StripVisibleSuffixFromInterpretation(vkUA, visibleTrailingSuffix);
 
-        // Chrome sends COMPLETELY FAKE scan AND VK codes (sequential counters).
-        // When ≥3 adjacent scans are sequential, both scan and VK data is garbage —
-        // clipboard fallback is the ONLY viable path.
-        bool chromeGarbage = seqScans >= 3;
+        string originalDisplay = !string.IsNullOrWhiteSpace(liveWord)
+            ? liveWord
+            : !string.IsNullOrWhiteSpace(visibleWord)
+            ? visibleWord
+            : $"{wordEN} | {wordUA}";
+        string techDetail = $"keys={approxWordLength} rec={recCount} drop={droppedKeys} seq={seqScans} lay={layoutTag}"
+                            + (vkEN != wordEN ? $" vkEn={vkEN}" : "")
+                            + (vkUA != wordUA ? $" vkUa={vkUA}" : "");
 
-        // Original: short decoded words (visible in UI column)
-        string originalDisplay = $"{wordEN} | {wordUA}";
-        // Technical detail for Reason column (wider)
-        string techDetail = $"keys={approxWordLength} rec={recCount} drop={droppedKeys} seq={seqScans} lay={layoutTag}" +
-                            (vkEN != wordEN ? $" vkEn={vkEN}" : "") +
-                            (vkUA != wordUA ? $" vkUa={vkUA}" : "");
+        return new WordSnapshot(
+            DateTime.UtcNow,
+            context,
+            context.ProcessName,
+            context.FocusedControlClass,
+            context.WindowClass,
+            currentSentence,
+            layoutTag,
+            _observer.LastDelimiterVk,
+            liveWord,
+            visibleWord,
+            visibleTrailingSuffix,
+            wordEN,
+            wordUA,
+            vkEN,
+            vkUA,
+            analysisWordEN,
+            analysisWordUA,
+            analysisVkEN,
+            analysisVkUA,
+            rawDebug,
+            originalDisplay,
+            techDetail,
+            new BufferQualitySnapshot(approxWordLength, recCount, droppedKeys, seqScans));
+    }
 
-        // Fast context snapshot (Win32 calls only — no UIA/COM)
-        var context = _contextProvider.GetCurrent();
-        string proc = context?.ProcessName ?? "?";
-        string cls = context?.FocusedControlClass ?? "?";
+    private CandidateDecision BuildCandidateDecision(WordSnapshot snapshot)
+    {
+        CorrectionCandidate? candidate = TryEvaluateCandidate(snapshot.AnalysisWordEN, snapshot.VisibleTrailingSuffix);
+        CandidateSource source = candidate is null ? CandidateSource.None : CandidateSource.PrimaryHeuristics;
 
-        if (approxWordLength < 2 || (analysisWordEN.Length < 2 && analysisWordUA.Length < 2))
+        if (candidate is null)
         {
-            // If we have enough keys but buffer decoding failed (garbage scan/VK codes),
-            // fall back to clipboard-based word reading. This handles Chrome which
-            // sometimes sends fake sequential scan/VK codes instead of real hardware data.
-            if (approxWordLength >= 3 && wordEN.Length < 2 && wordUA.Length < 2)
-            {
-                if (!TryBeginAutoOperation(proc, cls, originalDisplay,
-                        $"Skipped empty-buffer fallback: previous auto operation still in progress {techDetail} [{rawDebug}]"))
-                    return;
+            candidate = TryEvaluateCandidate(snapshot.AnalysisWordUA, snapshot.VisibleTrailingSuffix);
+            source = candidate is null ? CandidateSource.None : CandidateSource.PrimaryHeuristics;
+        }
 
-                _diagnostics.Log(proc, cls, "SendInput", false, OperationType.AutoMode,
-                    originalDisplay, null, DiagnosticResult.Skipped,
-                    $"L1 empty → clipboard fallback {techDetail} [{rawDebug}]");
-                _observer.SuppressCurrentDelimiter();
-                uint fallbackDelimVk = _observer.LastDelimiterVk;
-                var fallbackContext = context;
-                _ = Task.Run(() => ClipboardFallback(approxWordLength, fallbackDelimVk,
-                    fallbackContext, layoutTag, rawDebug));
+        if (candidate is null && !snapshot.BufferQuality.HasChromeLikeGarbage
+            && (snapshot.BufferQuality.RecoveryCount > 0 || snapshot.BufferQuality.DroppedKeyCount > 0))
+        {
+            if (!string.Equals(snapshot.AnalysisVkEN, snapshot.AnalysisWordEN, StringComparison.Ordinal))
+                candidate = TryEvaluateCandidate(snapshot.AnalysisVkEN, snapshot.VisibleTrailingSuffix);
+
+            if (candidate is null && !string.Equals(snapshot.AnalysisVkUA, snapshot.AnalysisWordUA, StringComparison.Ordinal))
+                candidate = TryEvaluateCandidate(snapshot.AnalysisVkUA, snapshot.VisibleTrailingSuffix);
+
+            if (candidate is not null)
+                source = CandidateSource.VkFallback;
+        }
+
+        if (candidate is null)
+        {
+            bool shouldTryLiveRuntimeRead = snapshot.BufferQuality.NeedsLiveDiscovery || IsBrowserLikeContext(snapshot.Context);
+            return snapshot.BufferQuality.NeedsLiveDiscovery
+                ? new CandidateDecision(
+                    Candidate: null,
+                    Source: CandidateSource.None,
+                    RequiresLiveRuntimeRead: true,
+                    SelectorFeatures: null,
+                    LearnedDecision: null,
+                    Reason: $"No reliable buffered candidate -> live runtime read {snapshot.TechDetail} [{snapshot.RawDebug}]")
+                : new CandidateDecision(
+                    Candidate: null,
+                    Source: CandidateSource.None,
+                    RequiresLiveRuntimeRead: shouldTryLiveRuntimeRead,
+                    SelectorFeatures: null,
+                    LearnedDecision: null,
+                    Reason: shouldTryLiveRuntimeRead
+                        ? $"No buffered conversion -> live runtime read {snapshot.TechDetail} [{snapshot.RawDebug}]"
+                        : $"No conversion {snapshot.TechDetail} [{snapshot.RawDebug}]");
+        }
+
+        return ApplyLearnedSelector(snapshot, candidate, source, candidate.Reason);
+    }
+
+    private CandidateDecision ApplyLearnedSelector(
+        WordSnapshot snapshot,
+        CorrectionCandidate candidate,
+        CandidateSource source,
+        string baseReason)
+    {
+        SelectorFeatureVector? features = CorrectionHeuristics.BuildSelectorFeatures(
+            candidate.OriginalText,
+            candidate.ConvertedText,
+            candidate.Direction);
+
+        if (!ShouldScoreWithLearnedSelector(candidate, features))
+        {
+            return new CandidateDecision(
+                candidate,
+                source,
+                RequiresLiveRuntimeRead: false,
+                SelectorFeatures: features,
+                LearnedDecision: null,
+                Reason: $"{baseReason} {snapshot.TechDetail} [{snapshot.RawDebug}]");
+        }
+
+        LearnedSelectorDecision? learnedDecision = features is null ? null : LearnedSelectorRuntime.Evaluate(features);
+        if (features is not null && learnedDecision is not null)
+        {
+            _diagnostics.LogSelectorExample(new SelectorDiagnosticExample(
+                DateTime.UtcNow,
+                snapshot.ProcessName,
+                snapshot.ControlClass,
+                candidate.OriginalText,
+                candidate.ConvertedText,
+                candidate.Direction.ToString(),
+                _settings.Current.LearnedSelectorGateEnabled ? "Gate" : "Shadow",
+                learnedDecision.Accept,
+                learnedDecision.Probability,
+                features.ToFeatureMap()));
+        }
+
+        if (learnedDecision is null)
+        {
+            return new CandidateDecision(
+                candidate,
+                source,
+                RequiresLiveRuntimeRead: false,
+                SelectorFeatures: features,
+                LearnedDecision: null,
+                Reason: $"{baseReason} {snapshot.TechDetail} [{snapshot.RawDebug}]");
+        }
+
+        string selectorReason = $"{baseReason} {learnedDecision.Reason}";
+        if (_settings.Current.LearnedSelectorGateEnabled && !learnedDecision.Accept)
+        {
+            return new CandidateDecision(
+                Candidate: null,
+                Source: source,
+                RequiresLiveRuntimeRead: false,
+                SelectorFeatures: features,
+                LearnedDecision: learnedDecision,
+                Reason: $"{selectorReason} gate=reject {snapshot.TechDetail} [{snapshot.RawDebug}]");
+        }
+
+        string stage = _settings.Current.LearnedSelectorGateEnabled ? "gate=pass" : "shadow";
+        return new CandidateDecision(
+            candidate,
+            source,
+            RequiresLiveRuntimeRead: false,
+            SelectorFeatures: features,
+            LearnedDecision: learnedDecision,
+            Reason: $"{selectorReason} {stage} {snapshot.TechDetail} [{snapshot.RawDebug}]");
+    }
+
+    private ReplacementPlan BuildReplacementPlan(WordSnapshot snapshot, CandidateDecision decision)
+    {
+        bool browserLike = IsBrowserLikeContext(snapshot.Context);
+        if (!browserLike)
+        {
+            return new ReplacementPlan(
+                snapshot,
+                decision,
+                ReplacementSafetyProfile.NativeSafe,
+                ReplacementExecutionPath.NativeSelectionTransaction,
+                "SendInput",
+                $"profile={ReplacementSafetyProfile.NativeSafe} path={ReplacementExecutionPath.NativeSelectionTransaction}");
+        }
+
+        // Electron-specific path: UIA read + Backspace+Unicode replace (no Shift+Left selection, no race).
+        // Gated behind a user opt-in setting so it can be tested without affecting default behaviour.
+        if (_settings.Current.ElectronUiaPathEnabled
+            && ElectronProcessCatalog.IsElectronProcess(snapshot.Context.ProcessName))
+        {
+            return new ReplacementPlan(
+                snapshot,
+                decision,
+                ReplacementSafetyProfile.ElectronUiaSafe,
+                ReplacementExecutionPath.ElectronUiaBackspaceReplace,
+                "ElectronUia",
+                $"profile={ReplacementSafetyProfile.ElectronUiaSafe} path={ReplacementExecutionPath.ElectronUiaBackspaceReplace} process={snapshot.ProcessName}");
+        }
+
+        BrowserSurfaceSnapshot surface = InspectBrowserSurface();
+        ReplacementSafetyProfile profile = ClassifyReplacementSafetyProfile(
+            isBrowserLikeContext: true,
+            hasWritableValuePattern: surface.HasWritableValuePattern,
+            safeOnlyMode: _settings.Current.SafeOnlyAutoMode,
+            unsafeCustomSurface: surface.UnsafeCustomEditorLike);
+
+        return profile switch
+        {
+            ReplacementSafetyProfile.BrowserValuePatternSafe => new ReplacementPlan(
+                snapshot,
+                decision,
+                profile,
+                ReplacementExecutionPath.BrowserValuePattern,
+                "UIAutomationTargetAdapter",
+                $"profile={profile} path={ReplacementExecutionPath.BrowserValuePattern} surface={surface.Summary}"),
+            ReplacementSafetyProfile.BrowserBestEffort => new ReplacementPlan(
+                snapshot,
+                decision,
+                profile,
+                ReplacementExecutionPath.ClipboardAssistedSelection,
+                "ClipboardSelectionTransaction",
+                $"profile={profile} path={ReplacementExecutionPath.ClipboardAssistedSelection} surface={surface.Summary}"),
+            _ => new ReplacementPlan(
+                snapshot,
+                decision,
+                ReplacementSafetyProfile.UnsafeSkip,
+                ReplacementExecutionPath.UnsafeSkip,
+                "AutoMode",
+                _settings.Current.SafeOnlyAutoMode
+                    ? "profile=UnsafeSkip reason=safe-only toggle forced browser fallback off"
+                    : $"profile=UnsafeSkip reason=custom browser/editor surface without exact-slice verification surface={surface.Summary}")
+        };
+    }
+
+    private async Task ExecuteReplacementPlan(ReplacementPlan plan)
+    {
+        try
+        {
+            switch (plan.ExecutionPath)
+            {
+                case ReplacementExecutionPath.NativeSelectionTransaction:
+                    ExecuteNativeReplacementTransaction(plan);
+                    break;
+                case ReplacementExecutionPath.BrowserValuePattern:
+                    await ExecuteBrowserValuePatternReplacement(plan);
+                    break;
+                case ReplacementExecutionPath.ClipboardAssistedSelection:
+                    await ExecuteClipboardAssistedReplacement(plan);
+                    break;
+                case ReplacementExecutionPath.ElectronUiaBackspaceReplace:
+                    await ExecuteElectronUiaReplacement(plan);
+                    break;
+                default:
+                    LogSkip(plan.Snapshot, plan.AdapterName, plan.Reason);
+                    break;
+            }
+        }
+        finally
+        {
+            EndAutoOperation();
+        }
+    }
+
+    private void ExecuteNativeReplacementTransaction(ReplacementPlan plan)
+    {
+        var snapshot = plan.Snapshot;
+        var candidate = plan.Decision.Candidate;
+        if (candidate is null)
+        {
+            LogSkip(snapshot, plan.AdapterName, "Native transaction skipped: no candidate");
+            return;
+        }
+
+        if (TryAbortPreconditions(snapshot, candidate.OriginalText, "Native transaction", out string abortReason))
+        {
+            LogSkip(snapshot, plan.AdapterName, $"Native transaction aborted: {abortReason}");
+            TryReinjectDelimiter(plan);
+            return;
+        }
+
+        string replacementCore = TrimLiteralTrailingSuffix(candidate.ConvertedText, snapshot.VisibleTrailingSuffix);
+        string originalCore = TrimLiteralTrailingSuffix(candidate.OriginalText, snapshot.VisibleTrailingSuffix);
+        var inputs = BuildAutoReplacementInputs(originalCore, replacementCore, snapshot.VisibleTrailingSuffix);
+        uint sent = NativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<NativeMethods.INPUT>());
+        bool success = sent == (uint)inputs.Length;
+
+        _diagnostics.Log(
+            snapshot.ProcessName,
+            snapshot.ControlClass,
+            plan.AdapterName,
+            true,
+            OperationType.AutoMode,
+            candidate.OriginalText,
+            candidate.ConvertedText,
+            success ? DiagnosticResult.Replaced : DiagnosticResult.Error,
+            success
+                ? $"{plan.Reason}; {plan.Decision.Reason}"
+                : $"{plan.Reason}; SendInput returned {sent}/{inputs.Length}");
+
+        if (success)
+            FinalizeSuccessfulReplacement(snapshot, candidate);
+
+        Thread.Sleep(30);
+        TryReinjectDelimiter(plan);
+    }
+
+    private async Task ExecuteBrowserValuePatternReplacement(ReplacementPlan plan)
+    {
+        long startCount = _observer.UserKeyDownCounter;
+        try
+        {
+            var snapshot = plan.Snapshot;
+            await Task.Delay(BrowserValuePatternStartDelayMs);
+            if (_observer.UserKeyDownCounter != startCount)
+            {
+                LogSkip(snapshot, plan.AdapterName, "Browser ValuePattern aborted: user kept typing before async replace started");
                 return;
             }
 
-            _diagnostics.Log(proc, cls, "SendInput", false, OperationType.AutoMode,
-                originalDisplay, null, DiagnosticResult.Skipped,
-                $"Too short {techDetail} [{rawDebug}]");
-            return;
-        }
-
-        if (context == null)
-        {
-            _diagnostics.Log("?", "?", "SendInput", false, OperationType.AutoMode,
-                originalDisplay, null, DiagnosticResult.Error,
-                $"Context is null {techDetail}");
-            return;
-        }
-
-        if (_exclusions.IsExcluded(context.ProcessName))
-        {
-            _diagnostics.Log(proc, cls, "SendInput", false, OperationType.AutoMode, originalDisplay, null,
-                DiagnosticResult.Skipped, $"Process is excluded {techDetail}");
-            return;
-        }
-
-        if (IsExcludedAutoWord(wordEN, wordUA, vkEN, vkUA, analysisWordEN, analysisWordUA, analysisVkEN, analysisVkUA))
-        {
-            _diagnostics.Log(proc, cls, "SendInput", false, OperationType.AutoMode, originalDisplay, null,
-                DiagnosticResult.Skipped, $"Word is excluded from Auto Mode {techDetail}");
-            return;
-        }
-
-        if (BrowserProcesses.Contains(context.ProcessName) && approxWordLength >= 2)
-        {
-            if (!TryBeginAutoOperation(proc, cls, originalDisplay,
-                    $"Skipped browser fallback: previous auto operation still in progress {techDetail} [{rawDebug}]"))
-                return;
-
-            _diagnostics.Log(proc, cls, "UIAutomationTargetAdapter", true, OperationType.AutoMode,
-                originalDisplay, null, DiagnosticResult.Skipped,
-                $"Browser target detected → prefer UIA/clipboard fallback {techDetail} [{rawDebug}]");
-            _observer.SuppressCurrentDelimiter();
-            uint fallbackDelimVk = _observer.LastDelimiterVk;
-            var fallbackContext = context;
-            _ = Task.Run(() => BrowserAutoFallback(approxWordLength, fallbackDelimVk, fallbackContext, layoutTag, rawDebug));
-            return;
-        }
-
-        // ─── Chrome garbage fast-path ─────────────────────────────────────────
-        // Chrome sends COMPLETELY FAKE sequential scan AND VK codes.
-        // Both scan-based and VK-based interpretations are garbage.
-        // Skip L1/L2 entirely, go straight to clipboard fallback.
-        if (chromeGarbage && approxWordLength >= 3)
-        {
-            if (!TryBeginAutoOperation(proc, cls, originalDisplay,
-                    $"Skipped Chromium fallback: previous auto operation still in progress {techDetail} [{rawDebug}]"))
-                return;
-
-            _diagnostics.Log(proc, cls, "SendInput", true, OperationType.AutoMode,
-                originalDisplay, null, DiagnosticResult.Skipped,
-                $"Sequential scans detected → clipboard fallback {techDetail} [{rawDebug}]");
-            _observer.SuppressCurrentDelimiter();
-            uint fallbackDelimVk = _observer.LastDelimiterVk;
-            var fallbackContext = context;
-            _ = Task.Run(() => ClipboardFallback(approxWordLength, fallbackDelimVk,
-                fallbackContext, layoutTag, rawDebug));
-            return;
-        }
-
-        // ─── Layer 1: Primary evaluation (scan+VK hybrid) ───────────────────
-        CorrectionCandidate? candidate = null;
-
-        // 1a) EN→UA (e.g. "ghbdsn" → привіт): require converted text in UA dictionary
-        if (analysisWordEN.Length >= 2)
-        {
-            var c = CorrectionHeuristics.Evaluate(analysisWordEN, CorrectionMode.Auto);
-            if (c != null)
-                candidate = ApplyVisibleTrailingPunctuation(c, visibleTrailingSuffix);
-        }
-
-        // 1b) UA→EN (e.g. "руддщ" → hello): normal threshold, no extra dictionary gate
-        if (candidate == null && analysisWordUA.Length >= 2)
-        {
-            var c = CorrectionHeuristics.Evaluate(analysisWordUA, CorrectionMode.Auto);
-            if (c != null)
-                candidate = ApplyVisibleTrailingPunctuation(c, visibleTrailingSuffix);
-        }
-
-        if (candidate != null)
-        {
-            // Layer 1 found a candidate — proceed to replacement (below)
-        }
-        else if (approxWordLength >= 3 && (recCount > 0 || droppedKeys > 0))
-        {
-            // ─── Layer 2: VK-only re-evaluation ─────────────────────────────
-            // Buffer data may be unreliable (scan recovery or dropped keys).
-            // Try VK-only interpretation (instant, no API calls).
-            _diagnostics.Log(proc, cls, "SendInput", true, OperationType.AutoMode,
-                originalDisplay, null, DiagnosticResult.Skipped,
-                $"L1 no match → trying L2 VK-only {techDetail} [{rawDebug}]");
-
-            if (analysisVkEN != analysisWordEN || analysisVkUA != analysisWordUA)
+            if (TryAbortPreconditions(snapshot, string.Empty, "Browser ValuePattern", out string abortReason))
             {
-                if (analysisVkEN.Length >= 2)
+                LogSkip(snapshot, plan.AdapterName, $"Browser ValuePattern aborted: {abortReason}");
+                return;
+            }
+
+            var adapter = new UIAutomationTargetAdapter();
+            if (adapter.CanHandle(snapshot.Context) != TargetSupport.Full)
+            {
+                LogSkip(snapshot, plan.AdapterName, "Browser ValuePattern aborted: ValuePattern is unavailable");
+                return;
+            }
+
+            string? actualWord = adapter.TryGetLastWord(snapshot.Context);
+            if (_observer.UserKeyDownCounter != startCount)
+            {
+                LogSkip(snapshot, plan.AdapterName, "Browser ValuePattern aborted: user kept typing after live word read");
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(actualWord) || actualWord.Length < 2)
+            {
+                LogSkip(snapshot, plan.AdapterName, "Browser ValuePattern aborted: unable to read current word");
+                return;
+            }
+
+            CorrectionCandidate? candidate;
+            if (plan.Decision.RequiresLiveRuntimeRead
+                || !ExactSliceMatchesExpected(actualWord, plan.Decision.Candidate?.OriginalText ?? snapshot.ExpectedOriginalWord))
+            {
+                var liveDecision = BuildLiveRuntimeCandidateDecision(snapshot, actualWord);
+                candidate = liveDecision.Candidate;
+                if (candidate is null)
                 {
-                    var c = CorrectionHeuristics.Evaluate(analysisVkEN, CorrectionMode.Auto);
-                    if (c != null)
-                        candidate = ApplyVisibleTrailingPunctuation(c, visibleTrailingSuffix);
-                }
-                if (candidate == null && analysisVkUA.Length >= 2)
-                {
-                    var c = CorrectionHeuristics.Evaluate(analysisVkUA, CorrectionMode.Auto);
-                    if (c != null)
-                        candidate = ApplyVisibleTrailingPunctuation(c, visibleTrailingSuffix);
+                    LogSkip(snapshot, plan.AdapterName, $"Browser ValuePattern skipped: {liveDecision.Reason}", actualWord);
+                    return;
                 }
             }
-
-            if (candidate == null)
+            else
             {
-                if (!TryBeginAutoOperation(proc, cls, originalDisplay,
-                        $"Skipped clipboard fallback: previous auto operation still in progress {techDetail} [{rawDebug}]"))
-                    return;
+                candidate = plan.Decision.Candidate;
+            }
 
-                // ─── Layer 3: Clipboard fallback ────────────────────────────
-                _diagnostics.Log(proc, cls, "SendInput", true, OperationType.AutoMode,
-                    originalDisplay, null, DiagnosticResult.Skipped,
-                    $"L2 no match → clipboard fallback {techDetail} [{rawDebug}]");
-                _observer.SuppressCurrentDelimiter();
-                uint fallbackDelimVk = _observer.LastDelimiterVk;
-                var fallbackContext = context;
-                _ = Task.Run(() => ClipboardFallback(approxWordLength, fallbackDelimVk,
-                    fallbackContext, layoutTag, rawDebug));
+            bool success = adapter.TryReplaceLastWord(snapshot.Context, candidate!.ConvertedText);
+            _diagnostics.Log(
+                snapshot.ProcessName,
+                snapshot.ControlClass,
+                plan.AdapterName,
+                true,
+                OperationType.AutoMode,
+                actualWord,
+                candidate.ConvertedText,
+                success ? DiagnosticResult.Replaced : DiagnosticResult.Error,
+                success ? $"{plan.Reason}; {plan.Decision.Reason}" : $"{plan.Reason}; exact-slice replace failed");
+
+            if (success)
+                FinalizeSuccessfulReplacement(snapshot, candidate);
+
+            Thread.Sleep(30);
+        }
+        finally
+        {
+            TryReinjectDelimiter(plan);
+        }
+    }
+
+    private async Task ExecuteElectronUiaReplacement(ReplacementPlan plan)
+    {
+        long startCount = _observer.UserKeyDownCounter;
+        var snapshot = plan.Snapshot;
+
+        await Task.Delay(ElectronUiaStartDelayMs);
+        if (_observer.UserKeyDownCounter != startCount)
+        {
+            LogSkip(snapshot, plan.AdapterName, "Electron UIA aborted: user kept typing before async replace started");
+            TryReinjectDelimiter(plan);
+            return;
+        }
+
+        if (TryAbortPreconditions(snapshot, string.Empty, "Electron UIA", out string abortReason))
+        {
+            LogSkip(snapshot, plan.AdapterName, $"Electron UIA aborted: {abortReason}");
+            TryReinjectDelimiter(plan);
+            return;
+        }
+
+        // 1. Read live word via UIA (TextPattern or ValuePattern)
+        var adapter = new UIAutomationTargetAdapter();
+        string? actualWord = adapter.TryGetLastWord(snapshot.Context);
+
+        if (string.IsNullOrWhiteSpace(actualWord) || actualWord.Length < 2)
+        {
+            LogSkip(snapshot, plan.AdapterName,
+                "Electron: UIA unavailable or word too short — auto-correction skipped to avoid selection race");
+            TryReinjectDelimiter(plan);
+            return;
+        }
+
+        if (_observer.UserKeyDownCounter != startCount)
+        {
+            LogSkip(snapshot, plan.AdapterName, "Electron UIA aborted: user kept typing after live word read");
+            TryReinjectDelimiter(plan);
+            return;
+        }
+
+        // 2. Evaluate candidate from live word
+        CorrectionCandidate? candidate;
+        if (plan.Decision.RequiresLiveRuntimeRead
+            || !ExactSliceMatchesExpected(actualWord, plan.Decision.Candidate?.OriginalText ?? snapshot.ExpectedOriginalWord))
+        {
+            var liveDecision = BuildLiveRuntimeCandidateDecision(snapshot, actualWord);
+            candidate = liveDecision.Candidate;
+            if (candidate is null)
+            {
+                LogSkip(snapshot, plan.AdapterName, $"Electron UIA skipped: {liveDecision.Reason}", actualWord);
+                TryReinjectDelimiter(plan);
                 return;
             }
-            // candidate was found via VK-only — fall through to replacement below
         }
         else
         {
-            _diagnostics.Log(proc, cls, "SendInput", true, OperationType.AutoMode,
-                originalDisplay, null,
-                DiagnosticResult.Skipped,
-                $"No conversion {techDetail} [{rawDebug}]");
+            candidate = plan.Decision.Candidate;
+        }
+
+        // 3. Final abort check
+        if (TryAbortPreconditions(snapshot, candidate!.OriginalText, "Electron UIA before replace", out abortReason))
+        {
+            LogSkip(snapshot, plan.AdapterName, $"Electron UIA aborted: {abortReason}");
+            TryReinjectDelimiter(plan);
             return;
         }
 
-        // We have a candidate — suppress delimiter and replace async
-        if (!TryBeginAutoOperation(proc, cls, originalDisplay,
-                $"Skipped auto replacement: previous auto operation still in progress {techDetail} [{rawDebug}]"))
-            return;
+        // 4. Build Backspace+Unicode inputs (no Shift+Left → no selection → no race condition)
+        string replacementCore = TrimLiteralTrailingSuffix(candidate.ConvertedText, snapshot.VisibleTrailingSuffix);
+        string originalCore = TrimLiteralTrailingSuffix(candidate.OriginalText, snapshot.VisibleTrailingSuffix);
+        int suffixLen = snapshot.VisibleTrailingSuffix.Length;
+        // Subtract suffix: suffix chars count in ApproxWordLength but are handled by separate Left/Right moves.
+        int eraseCount = Math.Max(originalCore.Length, snapshot.BufferQuality.ApproxWordLength - suffixLen);
 
-        uint delimVk = _observer.LastDelimiterVk;
-        _observer.SuppressCurrentDelimiter();
+        var modRelease = NativeMethods.BuildModifierReleaseInputs();
+        int totalInputs = modRelease.Length
+            + (suffixLen * 2)       // Left past suffix
+            + (eraseCount * 2)      // Backspace×N
+            + (replacementCore.Length * 2)  // Unicode chars
+            + (suffixLen * 2);      // Right back past suffix
+        var inputs = new NativeMethods.INPUT[totalInputs];
+        int idx = 0;
 
-        string replacement = candidate.ConvertedText;
-        var direction = candidate.Direction;
-        string reason = candidate.Reason;
-        string original = candidate.OriginalText;
-        string replacementCore = TrimLiteralTrailingSuffix(replacement, visibleTrailingSuffix);
-        string originalCore = TrimLiteralTrailingSuffix(original, visibleTrailingSuffix);
+        foreach (var inp in modRelease) inputs[idx++] = inp;
 
-        Task.Run(() =>
+        for (int i = 0; i < suffixLen; i++)
         {
-            try
-            {
-                var inputs = BuildAutoReplacementInputs(originalCore, replacementCore, visibleTrailingSuffix);
+            inputs[idx++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: false);
+            inputs[idx++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: true);
+        }
 
-                uint sent = NativeMethods.SendInput((uint)inputs.Length, inputs,
-                    Marshal.SizeOf<NativeMethods.INPUT>());
-                bool success = sent == (uint)inputs.Length;
+        for (int i = 0; i < eraseCount; i++)
+        {
+            inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: false);
+            inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: true);
+        }
 
-                _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
-                    "SendInput", true, OperationType.AutoMode,
-                    original, replacement,
-                    success ? DiagnosticResult.Replaced : DiagnosticResult.Error,
-                    success ? $"{reason} {techDetail}" : $"SendInput returned {sent}/{inputs.Length} {techDetail}");
+        foreach (char c in replacementCore)
+        {
+            inputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: false);
+            inputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: true);
+        }
 
-                if (success)
-                {
-                    _observer.ClearBuffer();
-                    NativeMethods.SwitchInputLanguage(context.Hwnd, context.FocusedControlHwnd,
-                        toUkrainian: direction == CorrectionDirection.EnToUa);
+        for (int i = 0; i < suffixLen; i++)
+        {
+            inputs[idx++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_RIGHT, keyUp: false);
+            inputs[idx++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_RIGHT, keyUp: true);
+        }
 
-                    // Save undo state so Backspace can revert this correction
-                    _lastCorrection = new UndoState(original, replacement, direction, delimVk);
-                }
+        uint sent = NativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<NativeMethods.INPUT>());
+        bool success = sent == (uint)inputs.Length;
 
-                // Re-inject the suppressed delimiter after replacement is processed.
-                Thread.Sleep(30);
-                ReinjectDelimiter(delimVk);
-            }
-            catch
-            {
-                ReinjectDelimiter(delimVk);
-            }
-            finally
-            {
-                EndAutoOperation();
-            }
-        });
+        _diagnostics.Log(
+            snapshot.ProcessName,
+            snapshot.ControlClass,
+            plan.AdapterName,
+            true,
+            OperationType.AutoMode,
+            actualWord,
+            candidate.ConvertedText,
+            success ? DiagnosticResult.Replaced : DiagnosticResult.Error,
+            success
+                ? $"{plan.Reason}; {plan.Decision.Reason}"
+                : $"{plan.Reason}; SendInput returned {sent}/{inputs.Length}");
+
+        if (success)
+            FinalizeSuccessfulReplacement(snapshot, candidate);
+
+        Thread.Sleep(30);
+        TryReinjectDelimiter(plan);
     }
 
-    private bool TryBeginAutoOperation(string proc, string cls, string originalDisplay, string reason)
+    private async Task ExecuteClipboardAssistedReplacement(ReplacementPlan plan)
+    {
+        long startCount = _observer.UserKeyDownCounter;
+        var snapshot = plan.Snapshot;
+        await Task.Delay(ClipboardAssistedStartDelayMs);
+        if (_observer.UserKeyDownCounter != startCount)
+        {
+            LogSkip(snapshot, plan.AdapterName, "Browser best-effort aborted: user kept typing before async replace started");
+            return;
+        }
+
+        string expectedWord = plan.Decision.Candidate?.OriginalText ?? snapshot.ExpectedOriginalWord;
+        if (TryAbortPreconditions(snapshot, expectedWord, "Browser best-effort preflight", out string abortReason))
+        {
+            LogSkip(snapshot, plan.AdapterName, $"Browser best-effort aborted: {abortReason}");
+            TryReinjectDelimiter(plan);
+            return;
+        }
+
+        int selectionLength = DetermineSelectionLength(snapshot, plan.Decision);
+        if (selectionLength < 2)
+        {
+            LogSkip(snapshot, plan.AdapterName, "Browser best-effort aborted: selection length is too short");
+            TryReinjectDelimiter(plan);
+            return;
+        }
+
+        string? savedClipboard = NativeMethods.GetClipboardText();
+        NativeMethods.SetClipboardText(null);
+
+        try
+        {
+            NativeMethods.INPUT[] selectionInputs = BuildSelectionInputs(selectionLength);
+            NativeMethods.SendInput((uint)selectionInputs.Length, selectionInputs, Marshal.SizeOf<NativeMethods.INPUT>());
+            await Task.Delay(90);
+
+            NativeMethods.INPUT[] copyInputs = BuildCopyInputs();
+            NativeMethods.SendInput((uint)copyInputs.Length, copyInputs, Marshal.SizeOf<NativeMethods.INPUT>());
+
+            string? selectedText = null;
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                await Task.Delay(attempt == 0 ? 120 : 160);
+                if (TryAbortPreconditions(snapshot, expectedWord, "Browser best-effort clipboard wait", out abortReason))
+                {
+                    LogSkip(snapshot, plan.AdapterName, $"Browser best-effort aborted: {abortReason}");
+                    CollapseSelectionRight();
+                    TryReinjectDelimiter(plan);
+                    return;
+                }
+
+                selectedText = NativeMethods.GetClipboardText();
+                if (!string.IsNullOrEmpty(selectedText))
+                    break;
+            }
+
+            CollapseSelectionRight();
+
+            if (string.IsNullOrEmpty(selectedText))
+            {
+                LogSkip(snapshot, plan.AdapterName, "Browser best-effort aborted: clipboard read is stale or empty");
+                TryReinjectDelimiter(plan);
+                return;
+            }
+
+            string liveWord = selectedText.Trim();
+            if (string.IsNullOrWhiteSpace(liveWord) || liveWord.Length < 2)
+            {
+                LogSkip(snapshot, plan.AdapterName, "Browser best-effort aborted: copied slice is too short");
+                TryReinjectDelimiter(plan);
+                return;
+            }
+
+            CorrectionCandidate? candidate;
+            if (plan.Decision.RequiresLiveRuntimeRead)
+            {
+                var liveDecision = BuildLiveRuntimeCandidateDecision(snapshot, liveWord);
+                candidate = liveDecision.Candidate;
+                if (candidate is null)
+                {
+                    LogSkip(snapshot, plan.AdapterName, $"Browser best-effort skipped: {liveDecision.Reason}", liveWord);
+                    TryReinjectDelimiter(plan);
+                    return;
+                }
+            }
+            else
+            {
+                candidate = plan.Decision.Candidate;
+                if (!ExactSliceMatchesExpected(liveWord, candidate?.OriginalText ?? expectedWord))
+                {
+                    LogSkip(snapshot, plan.AdapterName, "Browser best-effort aborted: exact-slice mismatch skip");
+                    TryReinjectDelimiter(plan);
+                    return;
+                }
+            }
+
+            if (TryAbortPreconditions(snapshot, candidate!.OriginalText, "Browser best-effort before replace", out abortReason))
+            {
+                LogSkip(snapshot, plan.AdapterName, $"Browser best-effort aborted: {abortReason}");
+                TryReinjectDelimiter(plan);
+                return;
+            }
+
+            NativeMethods.INPUT[] reselectInputs = BuildSelectionInputs(liveWord.Length);
+            NativeMethods.SendInput((uint)reselectInputs.Length, reselectInputs, Marshal.SizeOf<NativeMethods.INPUT>());
+            await Task.Delay(50);
+
+            var typeInputs = BuildUnicodeInputs(candidate.ConvertedText);
+            uint sent = NativeMethods.SendInput((uint)typeInputs.Length, typeInputs, Marshal.SizeOf<NativeMethods.INPUT>());
+            bool success = sent == (uint)typeInputs.Length;
+
+            _diagnostics.Log(
+                snapshot.ProcessName,
+                snapshot.ControlClass,
+                plan.AdapterName,
+                true,
+                OperationType.AutoMode,
+                liveWord,
+                candidate.ConvertedText,
+                success ? DiagnosticResult.Replaced : DiagnosticResult.Error,
+                success ? $"{plan.Reason}; {plan.Decision.Reason}" : $"{plan.Reason}; SendInput returned {sent}/{typeInputs.Length}");
+
+            if (success)
+                FinalizeSuccessfulReplacement(snapshot, candidate);
+
+            Thread.Sleep(30);
+            TryReinjectDelimiter(plan);
+        }
+        finally
+        {
+            NativeMethods.SetClipboardText(savedClipboard);
+        }
+    }
+
+    private CandidateDecision BuildLiveRuntimeCandidateDecision(WordSnapshot snapshot, string actualWord)
+    {
+        if (_exclusions.IsWordExcluded(actualWord))
+        {
+            return new CandidateDecision(
+                Candidate: null,
+                Source: CandidateSource.LiveRuntimeRead,
+                RequiresLiveRuntimeRead: false,
+                SelectorFeatures: null,
+                LearnedDecision: null,
+                Reason: $"Live runtime word is excluded from Auto Mode [{actualWord}]");
+        }
+
+        string toggledWord = KeyboardLayoutMap.ToggleLayoutText(actualWord, out _);
+        string visibleSuffix = ResolveVisibleTrailingPunctuation(actualWord, toggledWord);
+        string analysis = TrimTrailingChars(actualWord, visibleSuffix.Length);
+        CorrectionCandidate? candidate = string.IsNullOrWhiteSpace(analysis)
+            ? null
+            : CorrectionHeuristics.Evaluate(analysis, CorrectionMode.Auto);
+
+        if (candidate is not null)
+            candidate = ApplyVisibleTrailingPunctuation(candidate, visibleSuffix);
+
+        if (candidate is null)
+        {
+            return new CandidateDecision(
+                Candidate: null,
+                Source: CandidateSource.LiveRuntimeRead,
+                RequiresLiveRuntimeRead: false,
+                SelectorFeatures: null,
+                LearnedDecision: null,
+                Reason: $"Live runtime read found no conversion [{actualWord}]");
+        }
+
+        return ApplyLearnedSelector(snapshot, candidate, CandidateSource.LiveRuntimeRead, candidate.Reason);
+    }
+
+    private bool TryBeginAutoOperation(WordSnapshot snapshot, ReplacementPlan plan)
     {
         if (Interlocked.CompareExchange(ref _autoOperationInFlight, 1, 0) == 0)
+        {
+            string preflightOriginal = plan.ExecutionPath == ReplacementExecutionPath.NativeSelectionTransaction
+                ? snapshot.OriginalDisplay
+                : string.Empty;
+            _diagnostics.Log(
+                snapshot.ProcessName,
+                snapshot.ControlClass,
+                plan.AdapterName,
+                true,
+                OperationType.AutoMode,
+                preflightOriginal,
+                null,
+                DiagnosticResult.Skipped,
+                $"Chosen {plan.Reason}");
             return true;
+        }
 
-        _diagnostics.Log(proc, cls, "SendInput", true, OperationType.AutoMode,
-            originalDisplay, null, DiagnosticResult.Skipped, reason);
+        LogSkip(snapshot, plan.AdapterName, $"Skipped auto replacement: previous operation still in progress; {plan.Reason}");
         return false;
     }
 
-    private void EndAutoOperation()
+    private void EndAutoOperation() => Volatile.Write(ref _autoOperationInFlight, 0);
+
+    private void FinalizeSuccessfulReplacement(WordSnapshot snapshot, CorrectionCandidate candidate)
     {
-        Volatile.Write(ref _autoOperationInFlight, 0);
+        _observer.ClearBuffer();
+        NativeMethods.SwitchInputLanguage(
+            snapshot.Context.Hwnd,
+            snapshot.Context.FocusedControlHwnd,
+            toUkrainian: candidate.Direction == CorrectionDirection.EnToUa);
+        _lastCorrection = new UndoState(candidate.OriginalText, candidate.ConvertedText, candidate.Direction, snapshot.DelimiterVk);
     }
+
+    private bool TryAbortPreconditions(WordSnapshot snapshot, string expectedOriginal, string stage, out string reason)
+    {
+        if (_observer.HasInteractionSinceLastDelimiter)
+        {
+            reason = $"{stage}: post-delimiter interaction happened before async replace executes";
+            return true;
+        }
+
+        if ((DateTime.UtcNow - snapshot.CapturedAtUtc) > TimeSpan.FromMilliseconds(1200))
+        {
+            reason = $"{stage}: snapshot is stale";
+            return true;
+        }
+
+        ForegroundContext? current = _contextProvider.GetCurrent();
+        if (current is null)
+        {
+            reason = $"{stage}: focus changed";
+            return true;
+        }
+
+        if (current.ProcessId != snapshot.Context.ProcessId
+            || current.Hwnd != snapshot.Context.Hwnd
+            || current.FocusedControlHwnd != snapshot.Context.FocusedControlHwnd)
+        {
+            reason = $"{stage}: focus changed";
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(expectedOriginal))
+        {
+            string visibleNearCaret = _observer.GetVisibleWordNearCaret(current);
+            if (!string.IsNullOrWhiteSpace(visibleNearCaret)
+                && !ExactSliceMatchesExpected(visibleNearCaret, expectedOriginal))
+            {
+                reason = $"{stage}: visible word no longer matches expected original";
+                return true;
+            }
+        }
+
+        reason = string.Empty;
+        return false;
+    }
+
+    private void TryReinjectDelimiter(ReplacementPlan plan)
+    {
+        // Unconditionally reinject space to prevent losing it completely.
+        // Even if there's interaction (fast typing), a slightly out-of-order space
+        // is much better than merging two words permanently.
+        ReinjectDelimiter(plan.Snapshot.DelimiterVk);
+    }
+
+    private static CorrectionCandidate? TryEvaluateCandidate(string text, string visibleTrailingSuffix)
+    {
+        if (string.IsNullOrWhiteSpace(text) || text.Length < 2)
+            return null;
+
+        CorrectionCandidate? candidate = CorrectionHeuristics.Evaluate(text, CorrectionMode.Auto);
+        return candidate is null
+            ? null
+            : ApplyVisibleTrailingPunctuation(candidate, visibleTrailingSuffix);
+    }
+
+    private static bool ShouldScoreWithLearnedSelector(CorrectionCandidate candidate, SelectorFeatureVector? features)
+    {
+        if (features is null)
+            return false;
+
+        if (candidate.Confidence < 0.74)
+            return true;
+
+        return candidate.Direction == CorrectionDirection.UaToEn
+               || features.TargetDictionarySignal < 1.0
+               || features.Delta < 0.34;
+    }
+
+    private static int DetermineSelectionLength(WordSnapshot snapshot, CandidateDecision decision)
+    {
+        string preferred = decision.Candidate?.OriginalText ?? snapshot.ExpectedOriginalWord;
+        return preferred.Length >= 2 ? preferred.Length : snapshot.BufferQuality.ApproxWordLength;
+    }
+
+    private static NativeMethods.INPUT[] BuildSelectionInputs(int length)
+    {
+        var inputs = new NativeMethods.INPUT[2 + (length * 2)];
+        int idx = 0;
+        inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_SHIFT, keyUp: false);
+        for (int i = 0; i < length; i++)
+        {
+            inputs[idx++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: false);
+            inputs[idx++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: true);
+        }
+        inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_SHIFT, keyUp: true);
+        return inputs;
+    }
+
+    private static NativeMethods.INPUT[] BuildCopyInputs()
+    {
+        var inputs = new NativeMethods.INPUT[4];
+        inputs[0] = NativeMethods.MakeKeyInput(NativeMethods.VK_CONTROL, keyUp: false);
+        inputs[1] = NativeMethods.MakeKeyInput(0x43, keyUp: false);
+        inputs[2] = NativeMethods.MakeKeyInput(0x43, keyUp: true);
+        inputs[3] = NativeMethods.MakeKeyInput(NativeMethods.VK_CONTROL, keyUp: true);
+        return inputs;
+    }
+
+    private static NativeMethods.INPUT[] BuildUnicodeInputs(string text)
+    {
+        var inputs = new NativeMethods.INPUT[text.Length * 2];
+        int idx = 0;
+        foreach (char c in text)
+        {
+            inputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: false);
+            inputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: true);
+        }
+
+        return inputs;
+    }
+
+    private static void CollapseSelectionRight()
+    {
+        var inputs = new NativeMethods.INPUT[2];
+        inputs[0] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_RIGHT, keyUp: false);
+        inputs[1] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_RIGHT, keyUp: true);
+        NativeMethods.SendInput(2, inputs, Marshal.SizeOf<NativeMethods.INPUT>());
+    }
+
+    private static BrowserSurfaceSnapshot InspectBrowserSurface()
+    {
+        try
+        {
+            AutomationElement? element = AutomationElement.FocusedElement;
+            if (element is null)
+            {
+                return new BrowserSurfaceSnapshot(
+                    false,
+                    false,
+                    false,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    false,
+                    "uia=none");
+            }
+
+            bool hasWritableValuePattern = false;
+            if (element.TryGetCurrentPattern(ValuePattern.Pattern, out object? vp))
+                hasWritableValuePattern = !((ValuePattern)vp).Current.IsReadOnly;
+
+            bool hasTextPattern = element.TryGetCurrentPattern(TextPattern.Pattern, out _);
+            string controlType = element.Current.ControlType?.ProgrammaticName ?? string.Empty;
+            string localizedControlType = element.Current.LocalizedControlType ?? string.Empty;
+            string className = element.Current.ClassName ?? string.Empty;
+            string automationId = element.Current.AutomationId ?? string.Empty;
+            string merged = $"{controlType} {localizedControlType} {className} {automationId}".ToLowerInvariant();
+            bool customType = element.Current.ControlType == ControlType.Document
+                              || element.Current.ControlType == ControlType.Custom
+                              || element.Current.ControlType == ControlType.Pane;
+            bool unsafeCustom = UnsafeBrowserMarkers.Any(marker => merged.Contains(marker, StringComparison.Ordinal))
+                                || (!hasWritableValuePattern && customType);
+
+            return new BrowserSurfaceSnapshot(
+                HasFocusedElement: true,
+                HasWritableValuePattern: hasWritableValuePattern,
+                HasTextPattern: hasTextPattern,
+                ControlType: controlType,
+                LocalizedControlType: localizedControlType,
+                ClassName: className,
+                AutomationId: automationId,
+                UnsafeCustomEditorLike: unsafeCustom,
+                Summary: $"uia=value={hasWritableValuePattern} text={hasTextPattern} type={controlType}/{localizedControlType} class={className}");
+        }
+        catch (Exception ex)
+        {
+            return new BrowserSurfaceSnapshot(
+                false,
+                false,
+                false,
+                string.Empty,
+                string.Empty,
+                string.Empty,
+                string.Empty,
+                false,
+                $"uia=error:{ex.GetType().Name}");
+        }
+    }
+
+    private static bool IsBrowserLikeContext(ForegroundContext context) =>
+        BrowserProcesses.Contains(context.ProcessName)
+        || ElectronProcessCatalog.IsElectronProcess(context.ProcessName)
+        || BrowserLikeWindowClasses.Contains(context.FocusedControlClass)
+        || BrowserLikeWindowClasses.Contains(context.WindowClass);
+
+    private static ReplacementSafetyProfile ClassifyReplacementSafetyProfile(
+        bool isBrowserLikeContext,
+        bool hasWritableValuePattern,
+        bool safeOnlyMode,
+        bool unsafeCustomSurface)
+    {
+        if (!isBrowserLikeContext)
+            return ReplacementSafetyProfile.NativeSafe;
+
+        if (hasWritableValuePattern)
+            return ReplacementSafetyProfile.BrowserValuePatternSafe;
+
+        if (safeOnlyMode)
+            return ReplacementSafetyProfile.UnsafeSkip;
+
+        return ReplacementSafetyProfile.BrowserBestEffort;
+    }
+
+    private static bool ExactSliceMatchesExpected(string selectedText, string expectedOriginal)
+    {
+        string actual = selectedText.Trim();
+        string expected = expectedOriginal.Trim();
+        if (string.Equals(actual, expected, StringComparison.Ordinal))
+            return true;
+
+        string actualCore = TrimBoundaryLiteralPunctuation(actual);
+        if (!string.Equals(actualCore, actual, StringComparison.Ordinal)
+            && string.Equals(actualCore, expected, StringComparison.Ordinal))
+            return true;
+
+        string expectedCore = TrimBoundaryLiteralPunctuation(expected);
+        return !string.Equals(expectedCore, expected, StringComparison.Ordinal)
+            && string.Equals(actual, expectedCore, StringComparison.Ordinal);
+    }
+
+    private static bool ShouldReinjectDelimiter(bool hasInteractionSinceDelimiter) =>
+        !hasInteractionSinceDelimiter;
+
+    private void LogSkip(WordSnapshot snapshot, string adapterName, string reason, string? originalOverride = null) =>
+        _diagnostics.Log(
+            snapshot.ProcessName,
+            snapshot.ControlClass,
+            adapterName,
+            true,
+            OperationType.AutoMode,
+            string.IsNullOrWhiteSpace(originalOverride) ? snapshot.OriginalDisplay : originalOverride,
+            null,
+            DiagnosticResult.Skipped,
+            reason);
 
     private static void ReinjectDelimiter(uint delimVk)
     {
@@ -337,301 +1192,9 @@ public class AutoModeHandler
         NativeMethods.SendInput(2, inputs, Marshal.SizeOf<NativeMethods.INPUT>());
     }
 
-    /// <summary>
-    /// Clipboard-based fallback for when the scan code buffer produces garbage.
-    /// Selects the word using Shift+Left, copies via Ctrl+C, reads clipboard,
-    /// evaluates heuristics on the actual screen text, and replaces if needed.
-    /// </summary>
-    private void ClipboardFallback(int wordLen, uint delimVk,
-        ForegroundContext? context, string layoutTag, string rawDebug)
-    {
-        string proc = context?.ProcessName ?? "?";
-        string cls = context?.FocusedControlClass ?? "?";
-
-        try
-        {
-            // 0. Give the app time to finish processing the typed characters.
-            //    Chrome's async input pipeline may still be committing the last keys.
-            Thread.Sleep(150);
-
-            if (context != null && TryUiAutomationFallback(context, delimVk, layoutTag, rawDebug))
-                return;
-
-            // 1. Save current clipboard and CLEAR it so we can detect when copy succeeds
-            string? savedClipboard = NativeMethods.GetClipboardText();
-            NativeMethods.SetClipboardText(null);
-
-            // 2. Select the word: Shift held, Left×N, Shift released — ONE atomic SendInput
-            //    Arrow keys MUST use KEYEVENTF_EXTENDEDKEY or Chrome ignores them.
-            var sel = new NativeMethods.INPUT[2 + wordLen * 2]; // Shift↓, Left↓↑ × N, Shift↑
-            int si = 0;
-            sel[si++] = NativeMethods.MakeKeyInput(NativeMethods.VK_SHIFT, keyUp: false);
-            for (int i = 0; i < wordLen; i++)
-            {
-                sel[si++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: false);
-                sel[si++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: true);
-            }
-            sel[si++] = NativeMethods.MakeKeyInput(NativeMethods.VK_SHIFT, keyUp: true);
-            NativeMethods.SendInput((uint)sel.Length, sel, Marshal.SizeOf<NativeMethods.INPUT>());
-            Thread.Sleep(100);
-
-            // 3. Copy: Ctrl+C
-            var copy = new NativeMethods.INPUT[4];
-            copy[0] = NativeMethods.MakeKeyInput(NativeMethods.VK_CONTROL, keyUp: false);
-            copy[1] = NativeMethods.MakeKeyInput(0x43 /* VK_C */, keyUp: false);
-            copy[2] = NativeMethods.MakeKeyInput(0x43 /* VK_C */, keyUp: true);
-            copy[3] = NativeMethods.MakeKeyInput(NativeMethods.VK_CONTROL, keyUp: true);
-            NativeMethods.SendInput(4, copy, Marshal.SizeOf<NativeMethods.INPUT>());
-
-            // 4. Wait for clipboard to be populated — Chrome needs time
-            string? selectedText = null;
-            for (int attempt = 0; attempt < 5; attempt++)
-            {
-                Thread.Sleep(attempt == 0 ? 150 : 200);
-                selectedText = NativeMethods.GetClipboardText();
-                if (!string.IsNullOrEmpty(selectedText))
-                    break;
-            }
-
-            // 5. Restore original clipboard content
-            NativeMethods.SetClipboardText(savedClipboard);
-
-            // 6. Deselect: press Right to collapse selection to the right end
-            var desel = new NativeMethods.INPUT[2];
-            desel[0] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_RIGHT, keyUp: false);
-            desel[1] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_RIGHT, keyUp: true);
-            NativeMethods.SendInput(2, desel, Marshal.SizeOf<NativeMethods.INPUT>());
-
-            if (string.IsNullOrEmpty(selectedText) || selectedText.Length < 2)
-            {
-                _diagnostics.Log(proc, cls, "SendInput", false, OperationType.AutoMode,
-                    $"clipboard:'{selectedText}'", null, DiagnosticResult.Skipped,
-                    $"Clipboard fallback: copy failed (empty) [{rawDebug}]");
-                ReinjectDelimiter(delimVk);
-                return;
-            }
-
-            // 7. Evaluate heuristics on the actual screen text
-            string trimmed = selectedText.Trim();
-            if (_exclusions.IsWordExcluded(trimmed))
-            {
-                _diagnostics.Log(proc, cls, "SendInput", true, OperationType.AutoMode,
-                    trimmed, null, DiagnosticResult.Skipped,
-                    $"Clipboard fallback: word is excluded from Auto Mode (layout={layoutTag}) [{rawDebug}]");
-                ReinjectDelimiter(delimVk);
-                return;
-            }
-
-            string visibleSuffix = ExtractLiteralTrailingPunctuation(trimmed);
-            string analysis = TrimTrailingChars(trimmed, visibleSuffix.Length);
-            var candidate = string.IsNullOrWhiteSpace(analysis)
-                ? null
-                : CorrectionHeuristics.Evaluate(analysis, CorrectionMode.Auto);
-            if (candidate != null)
-                candidate = ApplyVisibleTrailingPunctuation(candidate, visibleSuffix);
-
-            if (candidate == null)
-            {
-                _diagnostics.Log(proc, cls, "SendInput", true, OperationType.AutoMode,
-                    $"clipboard:'{selectedText}'", null, DiagnosticResult.Skipped,
-                    $"Clipboard fallback: no conversion (layout={layoutTag}) [{rawDebug}]");
-                ReinjectDelimiter(delimVk);
-                return;
-            }
-
-            // 8. Replace: select the word again, then type replacement over it
-            int replaceLen = trimmed.Length; // use actual text length, not key count
-            var reSel = new NativeMethods.INPUT[2 + replaceLen * 2];
-            int ri = 0;
-            reSel[ri++] = NativeMethods.MakeKeyInput(NativeMethods.VK_SHIFT, keyUp: false);
-            for (int i = 0; i < replaceLen; i++)
-            {
-                reSel[ri++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: false);
-                reSel[ri++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: true);
-            }
-            reSel[ri++] = NativeMethods.MakeKeyInput(NativeMethods.VK_SHIFT, keyUp: true);
-            NativeMethods.SendInput((uint)reSel.Length, reSel, Marshal.SizeOf<NativeMethods.INPUT>());
-            Thread.Sleep(50);
-
-            // Type replacement (overwrites selection)
-            var typeInputs = new NativeMethods.INPUT[candidate.ConvertedText.Length * 2];
-            int idx = 0;
-            foreach (char c in candidate.ConvertedText)
-            {
-                typeInputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: false);
-                typeInputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: true);
-            }
-            uint sent = NativeMethods.SendInput((uint)typeInputs.Length, typeInputs,
-                Marshal.SizeOf<NativeMethods.INPUT>());
-            bool success = sent == (uint)typeInputs.Length;
-
-            _diagnostics.Log(proc, cls, "SendInput", true, OperationType.AutoMode,
-                candidate.OriginalText, candidate.ConvertedText,
-                success ? DiagnosticResult.Replaced : DiagnosticResult.Error,
-                success ? $"Clipboard fallback: {candidate.Reason} layout={layoutTag}"
-                        : $"Clipboard fallback: SendInput {sent}/{typeInputs.Length}");
-
-            if (success)
-            {
-                _observer.ClearBuffer();
-                if (context != null)
-                    NativeMethods.SwitchInputLanguage(context.Hwnd, context.FocusedControlHwnd,
-                        toUkrainian: candidate.Direction == CorrectionDirection.EnToUa);
-
-                _lastCorrection = new UndoState(candidate.OriginalText, candidate.ConvertedText, candidate.Direction, delimVk);
-            }
-
-            Thread.Sleep(30);
-            ReinjectDelimiter(delimVk);
-        }
-        catch (Exception ex)
-        {
-            _diagnostics.Log(proc, cls, "SendInput", false, OperationType.AutoMode,
-                "", null, DiagnosticResult.Error,
-                $"Clipboard fallback error: {ex.Message}");
-            ReinjectDelimiter(delimVk);
-        }
-        finally
-        {
-            EndAutoOperation();
-        }
-    }
-
-    private bool TryUiAutomationFallback(ForegroundContext context, uint delimVk, string layoutTag, string rawDebug)
-    {
-        try
-        {
-            var adapter = new UIAutomationTargetAdapter();
-            if (adapter.CanHandle(context) != TargetSupport.Full)
-                return false;
-
-            string? actualWord = adapter.TryGetLastWord(context);
-            if (string.IsNullOrWhiteSpace(actualWord) || actualWord.Length < 2)
-                return false;
-
-            if (_exclusions.IsWordExcluded(actualWord))
-                return false;
-
-            string visibleSuffix = ExtractLiteralTrailingPunctuation(actualWord);
-            string analysis = TrimTrailingChars(actualWord, visibleSuffix.Length);
-            var candidate = string.IsNullOrWhiteSpace(analysis)
-                ? null
-                : CorrectionHeuristics.Evaluate(analysis, CorrectionMode.Auto);
-            if (candidate != null)
-                candidate = ApplyVisibleTrailingPunctuation(candidate, visibleSuffix);
-
-            if (candidate == null)
-                return false;
-
-            bool success = adapter.TryReplaceLastWord(context, candidate.ConvertedText);
-            _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
-                adapter.AdapterName, true, OperationType.AutoMode,
-                candidate.OriginalText, candidate.ConvertedText,
-                success ? DiagnosticResult.Replaced : DiagnosticResult.Error,
-                success
-                    ? $"UIA fallback: {candidate.Reason} layout={layoutTag}"
-                    : "UIA fallback: replacement failed");
-
-            if (!success)
-                return false;
-
-            _observer.ClearBuffer();
-            NativeMethods.SwitchInputLanguage(context.Hwnd, context.FocusedControlHwnd,
-                toUkrainian: candidate.Direction == CorrectionDirection.EnToUa);
-            _lastCorrection = new UndoState(candidate.OriginalText, candidate.ConvertedText, candidate.Direction, delimVk);
-            Thread.Sleep(30);
-            ReinjectDelimiter(delimVk);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
-                "UIAutomationTargetAdapter", true, OperationType.AutoMode,
-                "", null, DiagnosticResult.Error,
-                $"UIA fallback error: {ex.Message} [{rawDebug}]");
-            return false;
-        }
-    }
-
-    private void BrowserAutoFallback(int wordLen, uint delimVk, ForegroundContext context, string layoutTag, string rawDebug)
-    {
-        try
-        {
-            // Let browser commit the typed text before reading via UIA.
-            Thread.Sleep(120);
-
-            if (TryUiAutomationFallback(context, delimVk, layoutTag, rawDebug))
-            {
-                EndAutoOperation();
-                return;
-            }
-
-            ClipboardFallback(wordLen, delimVk, context, layoutTag, rawDebug);
-        }
-        catch (Exception ex)
-        {
-            _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
-                "UIAutomationTargetAdapter", true, OperationType.AutoMode,
-                "", null, DiagnosticResult.Error,
-                $"Browser auto fallback error: {ex.Message}");
-            ReinjectDelimiter(delimVk);
-            EndAutoOperation();
-        }
-    }
-
-    /// <summary>
-    /// Called synchronously from the keyboard hook when Backspace is pressed
-    /// immediately after a correction (no new chars typed yet).
-    /// Undoes the last auto-correction: erases replacement + space, types original + space,
-    /// and switches the language back.
-    /// </summary>
-    public void OnUndoRequested()
-    {
-        if (!_settings.Current.UndoOnBackspace) return;
-
-        var undo = _lastCorrection;
-        if (undo == null) return;
-
-        _lastCorrection = null;
-        _observer.SuppressCurrentBackspace();
-
-        var context = _contextProvider.GetCurrent();
-
-        Task.Run(() =>
-        {
-            try
-            {
-                var inputs = BuildUndoInputs(undo.ReplacementText, undo.OriginalText);
-
-                uint sent = NativeMethods.SendInput((uint)inputs.Length, inputs,
-                    Marshal.SizeOf<NativeMethods.INPUT>());
-
-                // Switch language back (reverse the original direction)
-                if (context != null)
-                {
-                    NativeMethods.SwitchInputLanguage(context.Hwnd, context.FocusedControlHwnd,
-                        toUkrainian: undo.Direction != CorrectionDirection.EnToUa);
-                }
-
-                // Re-inject the same delimiter that originally triggered correction.
-                Thread.Sleep(30);
-                ReinjectDelimiter(undo.DelimiterVk);
-
-                _diagnostics.Log(
-                    context?.ProcessName ?? "?",
-                    context?.FocusedControlClass ?? "?",
-                    "SendInput", true, OperationType.AutoMode,
-                    undo.ReplacementText, undo.OriginalText,
-                    sent == (uint)inputs.Length ? DiagnosticResult.Replaced : DiagnosticResult.Error,
-                    "Undo via Backspace");
-            }
-            catch { /* undo is best-effort */ }
-        });
-    }
-
     private static NativeMethods.INPUT[] BuildUndoInputs(string replacementText, string restoreText)
     {
-        int eraseCount = replacementText.Length + 1; // replacement + delimiter
+        int eraseCount = replacementText.Length + 1;
         var modifierRelease = NativeMethods.BuildModifierReleaseInputs();
         var inputs = new NativeMethods.INPUT[modifierRelease.Length + eraseCount * 2 + restoreText.Length * 2];
         int idx = 0;
@@ -644,6 +1207,7 @@ public class AutoModeHandler
             inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: false);
             inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: true);
         }
+
         foreach (char c in restoreText)
         {
             inputs[idx++] = NativeMethods.MakeUnicodeInput(c, keyUp: false);
@@ -706,6 +1270,16 @@ public class AutoModeHandler
         while (start > 0 && IsLiteralTrailingPunctuation(visibleWord[start - 1]))
             start--;
 
+        while (start < visibleWord.Length
+               && IsWrappingQuote(visibleWord[start])
+               && start > 0
+               && (char.IsLetterOrDigit(visibleWord[start - 1])
+                   || KeyboardLayoutMap.IsLayoutLetterChar(visibleWord[start - 1])
+                   || KeyboardLayoutMap.IsWordConnector(visibleWord[start - 1])))
+        {
+            start++;
+        }
+
         if (start == visibleWord.Length || start == 0)
             return string.Empty;
 
@@ -718,12 +1292,87 @@ public class AutoModeHandler
     {
         foreach (string visibleWord in visibleWords)
         {
-            string suffix = ExtractLiteralTrailingPunctuation(visibleWord);
-            if (!string.IsNullOrEmpty(suffix))
-                return suffix;
+            string run = ExtractLiteralTrailingPunctuation(visibleWord);
+            if (string.IsNullOrEmpty(run))
+                continue;
+
+            for (int offset = run.Length - 1; offset >= 0; offset--)
+            {
+                string suffix = run[offset..];
+                if (ShouldTreatTrailingSuffixAsLiteral(suffix, visibleWords))
+                    return suffix;
+            }
         }
 
         return string.Empty;
+    }
+
+    private static bool ShouldTreatTrailingSuffixAsLiteral(string suffix, params string[] interpretations)
+    {
+        string toggledSuffix = KeyboardLayoutMap.ToggleLayoutText(suffix, out int changedCount);
+        if (changedCount > 0 && toggledSuffix.Any(char.IsLetter))
+        {
+            foreach (string interpretation in interpretations)
+            {
+                if (!string.IsNullOrWhiteSpace(interpretation)
+                    && interpretation.EndsWith(toggledSuffix, StringComparison.Ordinal)
+                    && interpretation.Length > toggledSuffix.Length)
+                {
+                    string core = interpretation[..^toggledSuffix.Length];
+
+                    if (CorrectionHeuristics.LooksCorrectAsTyped(interpretation)
+                        && !CorrectionHeuristics.HasStrongAsTypedSignal(core))
+                    {
+                        return false;
+                    }
+
+                    var fullCandidate = CorrectionHeuristics.Evaluate(interpretation, CorrectionMode.Auto);
+                    var coreCandidate = CorrectionHeuristics.Evaluate(core, CorrectionMode.Auto);
+
+                    if (fullCandidate is not null
+                        && (coreCandidate is null
+                            || (fullCandidate.Confidence >= coreCandidate.Confidence
+                                && fullCandidate.ConvertedText.Length > coreCandidate.ConvertedText.Length)))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        foreach (string interpretation in interpretations)
+        {
+            if (string.IsNullOrWhiteSpace(interpretation)
+                || !interpretation.EndsWith(suffix, StringComparison.Ordinal)
+                || interpretation.Length <= suffix.Length)
+                continue;
+
+            string core = interpretation[..^suffix.Length];
+            if (string.IsNullOrWhiteSpace(core))
+                continue;
+
+            if (changedCount > 0 && toggledSuffix.Any(char.IsLetter))
+            {
+                var fullCandidate = CorrectionHeuristics.Evaluate(interpretation, CorrectionMode.Auto);
+                var coreCandidate = CorrectionHeuristics.Evaluate(core, CorrectionMode.Auto);
+                if (fullCandidate is not null
+                    && coreCandidate is not null
+                    && fullCandidate.Confidence >= coreCandidate.Confidence
+                    && fullCandidate.ConvertedText.Length > coreCandidate.ConvertedText.Length)
+                {
+                    return false;
+                }
+            }
+
+            bool interpretationStable = CorrectionHeuristics.HasStrongAsTypedSignal(interpretation);
+            bool coreStable = CorrectionHeuristics.HasStrongAsTypedSignal(core);
+            bool coreConvertible = CorrectionHeuristics.Evaluate(core, CorrectionMode.Auto) is not null;
+
+            if ((interpretationStable && coreStable) || (!interpretationStable && coreConvertible))
+                return true;
+        }
+
+        return false;
     }
 
     private static string TrimTrailingChars(string text, int count)
@@ -744,6 +1393,23 @@ public class AutoModeHandler
             : text;
     }
 
+    private static string TrimBoundaryLiteralPunctuation(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return string.Empty;
+
+        int start = 0;
+        int end = text.Length;
+
+        while (start < end && IsLiteralTrailingPunctuation(text[start]))
+            start++;
+
+        while (end > start && IsLiteralTrailingPunctuation(text[end - 1]))
+            end--;
+
+        return end > start ? text[start..end] : string.Empty;
+    }
+
     private static string StripVisibleSuffixFromInterpretation(string text, string visibleSuffix)
     {
         if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(visibleSuffix))
@@ -759,11 +1425,22 @@ public class AutoModeHandler
         return text;
     }
 
-    private static NativeMethods.INPUT[] BuildAutoReplacementInputs(string originalCore, string replacementCore, string trailingSuffix)
+    private static NativeMethods.INPUT[] BuildAutoReplacementInputs(
+        string originalCore,
+        string replacementCore,
+        string trailingSuffix,
+        int? eraseCountOverride = null)
     {
         var modifierRelease = NativeMethods.BuildModifierReleaseInputs();
         int suffixLen = trailingSuffix.Length;
-        int totalInputs = modifierRelease.Length + (suffixLen * 2) + (originalCore.Length * 2) + (replacementCore.Length * 2) + (suffixLen * 2);
+        int eraseCount = eraseCountOverride ?? originalCore.Length;
+        int totalInputs = modifierRelease.Length
+            + (suffixLen * 2)
+            + 1
+            + (eraseCount * 2)
+            + 1
+            + (replacementCore.Length * 2)
+            + (suffixLen * 2);
         var inputs = new NativeMethods.INPUT[totalInputs];
         int idx = 0;
 
@@ -776,11 +1453,15 @@ public class AutoModeHandler
             inputs[idx++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: true);
         }
 
-        for (int i = 0; i < originalCore.Length; i++)
+        inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_SHIFT, keyUp: false);
+
+        for (int i = 0; i < eraseCount; i++)
         {
-            inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: false);
-            inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: true);
+            inputs[idx++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: false);
+            inputs[idx++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: true);
         }
+
+        inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_SHIFT, keyUp: true);
 
         foreach (char c in replacementCore)
         {
@@ -799,4 +1480,7 @@ public class AutoModeHandler
 
     private static bool IsLiteralTrailingPunctuation(char c) =>
         char.IsPunctuation(c) && !KeyboardLayoutMap.IsWordConnector(c);
+
+    private static bool IsWrappingQuote(char c) =>
+        c is '"' or '«' or '»' or '“' or '”' or '„';
 }

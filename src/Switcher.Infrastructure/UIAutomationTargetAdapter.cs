@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Windows.Automation;
 using System.Windows.Automation.Text;
+using Switcher.Core;
 
 namespace Switcher.Infrastructure;
 
@@ -53,9 +54,8 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
         // Don't compete with native edit adapter
         if (NativeEditClasses.Contains(cls)) return TargetSupport.Unsupported;
 
-        // Be conservative outside real browsers. Electron apps often expose ValuePattern
-        // but behave poorly on SetValue/caret restore, so prefer SendInput fallback there.
-        if (!BrowserProcesses.Contains(context.ProcessName))
+        // Allow real browsers and known Electron apps (like antigravity, VS Code, Slack etc)
+        if (!BrowserProcesses.Contains(context.ProcessName) && !ElectronProcessCatalog.IsElectronProcess(context.ProcessName))
             return TargetSupport.Unsupported;
 
         // Try to get UIA element and check for writable ValuePattern
@@ -268,8 +268,16 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
         {
             var element = AutomationElement.FocusedElement;
             if (element == null) return null;
-            if (!element.TryGetCurrentPattern(ValuePattern.Pattern, out object? vp)) return null;
-            return ((ValuePattern)vp).Current.Value;
+
+            // Strategy 1: ValuePattern (most browsers)
+            if (element.TryGetCurrentPattern(ValuePattern.Pattern, out object? vp))
+                return ((ValuePattern)vp).Current.Value;
+
+            // Strategy 2: TextPattern (backup for some Electron/WPF editors)
+            if (element.TryGetCurrentPattern(TextPattern.Pattern, out object? tp))
+                return ((TextPattern)tp).DocumentRange.GetText(-1);
+
+            return null;
         }
         catch { return null; }
     }
@@ -353,7 +361,12 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
             return false;
 
         newValue = currentValue[..start] + replacement + currentValue[end..];
-        targetCaretIndex = start + replacement.Length;
+        
+        // Ensure caret remains at exactly the end of the replaced word,
+        // so if the user typed text AFTER the word rapidly, the caret doesn't mysteriously jump back.
+        int caretGrowth = replacement.Length - (end - start);
+        // Estimate original caret was at 'end', so new position is 'end' + caretGrowth.
+        targetCaretIndex = end + caretGrowth;
         return true;
     }
 
@@ -374,26 +387,11 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
 
     private static bool TryRestoreCaretViaTextPattern(int targetCaretIndex)
     {
-        try
-        {
-            var element = AutomationElement.FocusedElement;
-            if (element == null) return false;
-            if (!element.TryGetCurrentPattern(TextPattern.Pattern, out object? tp)) return false;
-
-            var textPattern = (TextPattern)tp;
-            var caretRange = textPattern.DocumentRange.Clone();
-            caretRange.MoveEndpointByUnit(TextPatternRangeEndpoint.Start, TextUnit.Character, targetCaretIndex);
-            caretRange.MoveEndpointByRange(
-                TextPatternRangeEndpoint.End,
-                caretRange,
-                TextPatternRangeEndpoint.Start);
-            caretRange.Select();
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
+        // TextPattern.Select() is unreliable in Electron apps (Telegram, VS Code, etc.) —
+        // it can misplace the caret by 1+ positions causing the delimiter (Space) to land
+        // mid-word. Always fall through to BuildCaretRestoreInputs (Ctrl+End + Left×N).
+        _ = targetCaretIndex;
+        return false;
     }
 
     /// <inheritdoc/>

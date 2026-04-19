@@ -6,7 +6,12 @@ namespace Switcher.Core;
 public class AppSettings
 {
     public bool AutoModeEnabled { get; set; } = false;
+    public bool SafeOnlyAutoMode { get; set; } = false;
+    public bool ElectronUiaPathEnabled { get; set; } = true;
     public bool DiagnosticsEnabled { get; set; } = true;
+    public bool SelectorDiagnosticsExportEnabled { get; set; } = false;
+    public bool LearnedSelectorGateEnabled { get; set; } = false;
+    public bool RunAtStartup { get; set; } = false;
     public bool StartMinimized { get; set; } = true;
     public bool StrictAutoMode { get; set; } = true;
     public bool UndoOnBackspace { get; set; } = true;

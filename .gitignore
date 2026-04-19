@@ -15,6 +15,8 @@ out/
 .idea/
 *.rsuser
 [Dd]ebugPublic/
+.tmp/
+.venv/
 
 # NuGet
 packages/

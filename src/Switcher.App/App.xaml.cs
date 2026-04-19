@@ -118,9 +118,12 @@ public partial class App : System.Windows.Application
     {
         if (_trayIcon == null || _engine == null) return;
         bool autoEnabled = _engine.Settings.Current.AutoModeEnabled;
+        bool safeOnly = _engine.Settings.Current.SafeOnlyAutoMode;
         bool hotkeysReady = _engine.SafeHotkeysAvailable;
         _trayIcon.Text = autoEnabled
-            ? (hotkeysReady ? "EN-UA Switcher — Auto ON, hotkeys ON" : "EN-UA Switcher — Auto ON, hotkeys unavailable")
+            ? (hotkeysReady
+                ? (safeOnly ? "EN-UA Switcher — Auto safe-only, hotkeys ON" : "EN-UA Switcher — Auto broad, hotkeys ON")
+                : (safeOnly ? "EN-UA Switcher — Auto safe-only, hotkeys unavailable" : "EN-UA Switcher — Auto broad, hotkeys unavailable"))
             : (hotkeysReady ? "EN-UA Switcher — Auto OFF, hotkeys ON" : "EN-UA Switcher — Auto OFF, hotkeys unavailable");
     }
 

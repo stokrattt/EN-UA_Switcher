@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
@@ -334,6 +335,7 @@ public static class NativeMethods
     [DllImport("user32.dll")] public static extern bool GetKeyboardState(byte[] lpKeyState);
     [DllImport("user32.dll")] public static extern IntPtr GetKeyboardLayout(uint idThread);
     [DllImport("user32.dll")] public static extern short GetKeyState(uint nVirtKey);
+    [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vKey);
     [DllImport("user32.dll")] public static extern uint MapVirtualKeyEx(uint uCode, uint uMapType, IntPtr dwhkl);
 
     /// <summary>MAPVK_VK_TO_VSC: Virtual-key code → scan code.</summary>
@@ -443,20 +445,21 @@ public static class NativeMethods
         }
     }
 
-    /// <summary>
-    /// Releases modifier keys that may still be logically down when a global hotkey fires.
-    /// This prevents injected follow-up input from becoming Ctrl+Backspace / Shift+End, etc.
-    /// </summary>
-    public static INPUT[] BuildModifierReleaseInputs() => new[]
+    public static INPUT[] BuildModifierReleaseInputs()
     {
-        MakeKeyInput(VK_SHIFT, keyUp: true),
-        MakeKeyInput(VK_CONTROL, keyUp: true),
-        MakeKeyInput(VK_MENU, keyUp: true),
-        MakeKeyInput(VK_LSHIFT, keyUp: true),
-        MakeKeyInput(VK_RSHIFT, keyUp: true),
-        MakeKeyInput(VK_LCONTROL, keyUp: true),
-        MakeKeyInput(VK_RCONTROL, keyUp: true),
-        MakeKeyInput(VK_LMENU, keyUp: true),
-        MakeKeyInput(VK_RMENU, keyUp: true),
-    };
+        var inputs = new List<INPUT>(9);
+
+        if ((GetAsyncKeyState((int)VK_SHIFT) & 0x8000) != 0) inputs.Add(MakeKeyInput(VK_SHIFT, true));
+        if ((GetAsyncKeyState((int)VK_CONTROL) & 0x8000) != 0) inputs.Add(MakeKeyInput(VK_CONTROL, true));
+        if ((GetAsyncKeyState((int)VK_MENU) & 0x8000) != 0) inputs.Add(MakeKeyInput(VK_MENU, true));
+        
+        if ((GetAsyncKeyState((int)VK_LSHIFT) & 0x8000) != 0) inputs.Add(MakeKeyInput(VK_LSHIFT, true));
+        if ((GetAsyncKeyState((int)VK_RSHIFT) & 0x8000) != 0) inputs.Add(MakeKeyInput(VK_RSHIFT, true));
+        if ((GetAsyncKeyState((int)VK_LCONTROL) & 0x8000) != 0) inputs.Add(MakeKeyInput(VK_LCONTROL, true));
+        if ((GetAsyncKeyState((int)VK_RCONTROL) & 0x8000) != 0) inputs.Add(MakeKeyInput(VK_RCONTROL, true));
+        if ((GetAsyncKeyState((int)VK_LMENU) & 0x8000) != 0) inputs.Add(MakeKeyInput(VK_LMENU, true));
+        if ((GetAsyncKeyState((int)VK_RMENU) & 0x8000) != 0) inputs.Add(MakeKeyInput(VK_RMENU, true));
+
+        return inputs.ToArray();
+    }
 }

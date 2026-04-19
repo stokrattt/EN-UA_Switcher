@@ -1,6 +1,10 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
+using System.Reflection;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -18,17 +22,24 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<string> _exclusions = [];
     private readonly ObservableCollection<string> _excludedWords = [];
     private readonly ObservableCollection<string> _runningProcesses = [];
+    private string _savedStateSnapshot = string.Empty;
+    private bool _isLoadingState;
+    private HotkeyDescriptor _capturedLastWordHotkey = new(Modifiers: 6, VirtualKey: 0x4B);
+    private HotkeyDescriptor _capturedSelectionHotkey = new(Modifiers: 6, VirtualKey: 0x4C);
 
     public MainWindow(SwitcherEngine engine)
     {
         _engine = engine;
         InitializeComponent();
+        SetAboutVersion();
 
         LstExclusions.ItemsSource = _exclusions;
         LstExcludedWords.ItemsSource = _excludedWords;
         CmbRunningProcesses.ItemsSource = _runningProcesses;
+        HookDirtyTracking();
 
         LoadSettings();
+        UpdateAutomationOptionState();
 
         using var icon = TrayIconHelper.CreateIcon();
         Icon = Imaging.CreateBitmapSourceFromHIcon(
@@ -38,18 +49,50 @@ public partial class MainWindow : Window
         Closing += (_, e) => { e.Cancel = true; SaveCurrentState(); Hide(); };
     }
 
+    private void SetAboutVersion()
+    {
+        try
+        {
+            var entryAssembly = Assembly.GetEntryAssembly() ?? Assembly.GetExecutingAssembly();
+            string informationalVersion =
+                entryAssembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+                ?? entryAssembly.GetName().Version?.ToString()
+                ?? "unknown";
+
+            string buildDate = File.Exists(entryAssembly.Location)
+                ? File.GetLastWriteTime(entryAssembly.Location).ToString("yyyy-MM-dd")
+                : DateTime.Now.ToString("yyyy-MM-dd");
+
+            TxtAboutVersion.Text = $"{informationalVersion} - build {buildDate}";
+        }
+        catch
+        {
+            TxtAboutVersion.Text = "Version unavailable";
+        }
+    }
+
     private void LoadSettings()
     {
+        _isLoadingState = true;
+
         var s = _engine.Settings.Current;
         ChkAutoMode.IsChecked = s.AutoModeEnabled;
+        ChkSafeOnlyAutoMode.IsChecked = s.SafeOnlyAutoMode;
+        ChkElectronUiaPath.IsChecked = s.ElectronUiaPathEnabled;
         ChkCorrectOnSpace.IsChecked = s.CorrectOnSpace;
         ChkCorrectOnEnter.IsChecked = s.CorrectOnEnter;
         ChkCorrectOnTab.IsChecked = s.CorrectOnTab;
         ChkCancelOnBackspace.IsChecked = s.CancelOnBackspace;
         ChkCancelOnLeftArrow.IsChecked = s.CancelOnLeftArrow;
         ChkUndoOnBackspace.IsChecked = s.UndoOnBackspace;
+        ChkRunAtStartup.IsChecked = s.RunAtStartup;
         ChkStartMinimized.IsChecked = s.StartMinimized;
         ChkDiagnostics.IsChecked = s.DiagnosticsEnabled;
+        ChkSelectorDiagnosticsExport.IsChecked = s.SelectorDiagnosticsExportEnabled;
+        ChkLearnedSelectorGate.IsChecked = s.LearnedSelectorGateEnabled;
+        UpdateAutomationOptionState();
+        _capturedLastWordHotkey = s.SafeLastWordHotkey;
+        _capturedSelectionHotkey = s.SafeSelectionHotkey;
         TxtLastWordHotkey.Text = s.SafeLastWordHotkey.FriendlyName;
         TxtSelectionHotkey.Text = s.SafeSelectionHotkey.FriendlyName;
 
@@ -63,14 +106,21 @@ public partial class MainWindow : Window
 
         RefreshRunningProcesses();
         UpdateStatusBar();
+        _savedStateSnapshot = BuildPersistedStateSnapshot();
+        _isLoadingState = false;
+        UpdateDirtyState();
     }
 
     private void UpdateStatusBar()
     {
         bool auto = _engine.Settings.Current.AutoModeEnabled;
+        bool safeOnly = _engine.Settings.Current.SafeOnlyAutoMode;
         bool hotkeysReady = _engine.SafeHotkeysAvailable;
+        string autoState = auto
+            ? (safeOnly ? "Auto Mode ON (safe-only)" : "Auto Mode ON (experimental broad)")
+            : "Auto Mode OFF";
         StatusText.Text = auto
-            ? (hotkeysReady ? "Engine running — Auto Mode ON, hotkeys ON" : "Engine running — Auto Mode ON, hotkeys unavailable")
+            ? (hotkeysReady ? $"Engine running — {autoState}, hotkeys ON" : $"Engine running — {autoState}, hotkeys unavailable")
             : (hotkeysReady ? "Engine running — Auto Mode OFF, hotkeys ON" : "Engine running — Auto Mode OFF, hotkeys unavailable");
 
         TxtHotkeyStatus.Text = hotkeysReady
@@ -82,23 +132,64 @@ public partial class MainWindow : Window
     {
         var s = _engine.Settings.Current;
         s.AutoModeEnabled = ChkAutoMode.IsChecked == true;
+        s.SafeOnlyAutoMode = ChkSafeOnlyAutoMode.IsChecked == true;
+        s.ElectronUiaPathEnabled = ChkElectronUiaPath.IsChecked == true;
         s.CorrectOnSpace = ChkCorrectOnSpace.IsChecked == true;
         s.CorrectOnEnter = ChkCorrectOnEnter.IsChecked == true;
         s.CorrectOnTab = ChkCorrectOnTab.IsChecked == true;
         s.CancelOnBackspace = ChkCancelOnBackspace.IsChecked == true;
         s.CancelOnLeftArrow = ChkCancelOnLeftArrow.IsChecked == true;
         s.UndoOnBackspace = ChkUndoOnBackspace.IsChecked == true;
+        s.RunAtStartup = ChkRunAtStartup.IsChecked == true;
         s.StartMinimized = ChkStartMinimized.IsChecked == true;
         s.DiagnosticsEnabled = ChkDiagnostics.IsChecked == true;
+        s.SelectorDiagnosticsExportEnabled = ChkSelectorDiagnosticsExport.IsChecked == true;
+        s.LearnedSelectorGateEnabled = ChkLearnedSelectorGate.IsChecked == true;
         s.ExcludedProcessNames = _exclusions.ToList();
         s.ExcludedWords = _excludedWords.ToList();
+        s.SafeLastWordHotkey = _capturedLastWordHotkey;
+        s.SafeSelectionHotkey = _capturedSelectionHotkey;
         _engine.ApplySettings();
         UpdateStatusBar();
+        _savedStateSnapshot = BuildPersistedStateSnapshot();
+        UpdateDirtyState();
     }
 
     private void BtnSave_Click(object sender, RoutedEventArgs e)
     {
         SaveCurrentState();
+    }
+
+    private void TxtHotkey_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        // Ignore lone modifier keys
+        if (e.Key is Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift
+            or Key.LeftAlt or Key.RightAlt or Key.LWin or Key.RWin or Key.System)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        bool ctrl = Keyboard.IsKeyDown(Key.LeftCtrl) || Keyboard.IsKeyDown(Key.RightCtrl);
+        bool shift = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
+        bool alt = Keyboard.IsKeyDown(Key.LeftAlt) || Keyboard.IsKeyDown(Key.RightAlt);
+        e.Handled = true;
+
+        if (!ctrl && !shift && !alt) return; // no modifier — ignore
+
+        uint modifiers = 0;
+        if (ctrl) modifiers |= 2;
+        if (alt) modifiers |= 1;
+        if (shift) modifiers |= 4;
+
+        uint vk = (uint)KeyInterop.VirtualKeyFromKey(e.Key);
+        var hotkey = new HotkeyDescriptor(modifiers, vk);
+        var txt = (System.Windows.Controls.TextBox)sender;
+        if (txt == TxtLastWordHotkey) _capturedLastWordHotkey = hotkey;
+        else _capturedSelectionHotkey = hotkey;
+
+        txt.Text = hotkey.FriendlyName;
+        UpdateDirtyState();
     }
 
     private void BtnCancel_Click(object sender, RoutedEventArgs e)
@@ -129,6 +220,7 @@ public partial class MainWindow : Window
     {
         RefreshRunningProcesses();
         CmbRunningProcesses.IsDropDownOpen = true;
+        CmbRunningProcesses.Focus();
     }
 
     private void BtnRemoveExclusion_Click(object sender, RoutedEventArgs e)
@@ -151,6 +243,8 @@ public partial class MainWindow : Window
     private void CmbRunningProcesses_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
         CmbRunningProcesses.IsDropDownOpen = true;
+        if (FindDescendant<System.Windows.Controls.TextBox>(CmbRunningProcesses) is System.Windows.Controls.TextBox editableTextBox)
+            editableTextBox.SelectAll();
     }
 
     private void CmbRunningProcesses_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -200,6 +294,9 @@ public partial class MainWindow : Window
 
     private void NestedScrollHost_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
+        if (sender is System.Windows.Controls.ComboBox comboBox && comboBox.IsDropDownOpen)
+            return;
+
         if (sender is System.Windows.Controls.ListBox listBox)
         {
             var innerScroll = FindDescendant<ScrollViewer>(listBox);
@@ -232,6 +329,7 @@ public partial class MainWindow : Window
         _exclusions.Add(name);
         SortCollection(_exclusions);
         LstExclusions.SelectedItem = name;
+        CmbRunningProcesses.Text = string.Empty;
         return true;
     }
 
@@ -322,5 +420,84 @@ public partial class MainWindow : Window
         }
 
         return null;
+    }
+
+    private void HookDirtyTracking()
+    {
+        foreach (var checkBox in new[]
+        {
+            ChkAutoMode,
+            ChkSafeOnlyAutoMode,
+            ChkElectronUiaPath,
+            ChkCorrectOnSpace,
+            ChkCorrectOnEnter,
+            ChkCorrectOnTab,
+            ChkCancelOnBackspace,
+            ChkCancelOnLeftArrow,
+            ChkUndoOnBackspace,
+            ChkRunAtStartup,
+            ChkStartMinimized,
+            ChkDiagnostics,
+            ChkSelectorDiagnosticsExport,
+            ChkLearnedSelectorGate
+        })
+        {
+            checkBox.Checked += PersistedStateControlChanged;
+            checkBox.Unchecked += PersistedStateControlChanged;
+        }
+
+        _exclusions.CollectionChanged += PersistedCollectionChanged;
+        _excludedWords.CollectionChanged += PersistedCollectionChanged;
+    }
+
+    private void UpdateAutomationOptionState()
+    {
+        bool autoEnabled = ChkAutoMode.IsChecked == true;
+        ChkSafeOnlyAutoMode.IsEnabled = autoEnabled;
+        ChkElectronUiaPath.IsEnabled = autoEnabled;
+    }
+
+    private void PersistedStateControlChanged(object sender, RoutedEventArgs e)
+    {
+        if (ReferenceEquals(sender, ChkAutoMode))
+            UpdateAutomationOptionState();
+
+        UpdateDirtyState();
+    }
+
+    private void PersistedCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => UpdateDirtyState();
+
+    private void UpdateDirtyState()
+    {
+        if (_isLoadingState)
+            return;
+
+        bool isDirty = !string.Equals(BuildPersistedStateSnapshot(), _savedStateSnapshot, StringComparison.Ordinal);
+        BtnSave.IsEnabled = isDirty;
+        BtnSave.Content = isDirty ? "Save" : "Saved";
+    }
+
+    private string BuildPersistedStateSnapshot()
+    {
+        var builder = new StringBuilder(256);
+        builder.Append(ChkAutoMode.IsChecked == true).Append('|');
+        builder.Append(ChkSafeOnlyAutoMode.IsChecked == true).Append('|');
+        builder.Append(ChkElectronUiaPath.IsChecked == true).Append('|');
+        builder.Append(ChkCorrectOnSpace.IsChecked == true).Append('|');
+        builder.Append(ChkCorrectOnEnter.IsChecked == true).Append('|');
+        builder.Append(ChkCorrectOnTab.IsChecked == true).Append('|');
+        builder.Append(ChkCancelOnBackspace.IsChecked == true).Append('|');
+        builder.Append(ChkCancelOnLeftArrow.IsChecked == true).Append('|');
+        builder.Append(ChkUndoOnBackspace.IsChecked == true).Append('|');
+        builder.Append(ChkRunAtStartup.IsChecked == true).Append('|');
+        builder.Append(ChkStartMinimized.IsChecked == true).Append('|');
+        builder.Append(ChkDiagnostics.IsChecked == true).Append('|');
+        builder.Append(ChkSelectorDiagnosticsExport.IsChecked == true).Append('|');
+        builder.Append(ChkLearnedSelectorGate.IsChecked == true).Append('|');
+        builder.Append(string.Join(';', _exclusions.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))).Append('|');
+        builder.Append(string.Join(';', _excludedWords.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))).Append('|');
+        builder.Append(_capturedLastWordHotkey.FriendlyName).Append('|');
+        builder.Append(_capturedSelectionHotkey.FriendlyName);
+        return builder.ToString();
     }
 }

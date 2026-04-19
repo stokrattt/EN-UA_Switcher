@@ -31,7 +31,10 @@ public class SwitcherEngine : IDisposable
         Settings.Load();
 
         Diagnostics = new DiagnosticsLogger();
-        Diagnostics.Configure(Settings.Current.DiagnosticsEnabled);
+        Diagnostics.Configure(
+            Settings.Current.DiagnosticsEnabled,
+            toFile: Settings.Current.DiagnosticsEnabled,
+            selectorExport: Settings.Current.SelectorDiagnosticsExportEnabled);
 
         _contextProvider = new ForegroundContextProvider();
         _keyboardObserver = new KeyboardObserver(Settings);
@@ -39,7 +42,7 @@ public class SwitcherEngine : IDisposable
         _exclusions = new ExclusionManager(Settings);
 
         _safeMode = new SafeModeHandler(_contextProvider, _coordinator, _exclusions, Diagnostics, Settings);
-        _autoMode = new AutoModeHandler(_contextProvider, _exclusions, Diagnostics, Settings, _keyboardObserver);
+        _autoMode = new AutoModeHandler(_contextProvider, _coordinator, _exclusions, Diagnostics, Settings, _keyboardObserver);
     }
 
     /// <summary>Starts the engine: installs keyboard hook, registers hotkeys.</summary>
@@ -97,7 +100,11 @@ public class SwitcherEngine : IDisposable
     public void ApplySettings()
     {
         Settings.Save();
-        Diagnostics.Configure(Settings.Current.DiagnosticsEnabled);
+        StartupHelper.SetStartup(Settings.Current.RunAtStartup);
+        Diagnostics.Configure(
+            Settings.Current.DiagnosticsEnabled,
+            toFile: Settings.Current.DiagnosticsEnabled,
+            selectorExport: Settings.Current.SelectorDiagnosticsExportEnabled);
         _hotkeyManager?.UpdateHotkeys(
             Settings.Current.SafeLastWordHotkey,
             Settings.Current.SafeSelectionHotkey);

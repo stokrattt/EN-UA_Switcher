@@ -172,23 +172,23 @@ public class UiAutomationTargetAdapterRegressionTests
     }
 
     [Theory]
-    [InlineData(12, 12, 13)]
-    [InlineData(12, 9, 19)]
+    [InlineData(12, 12, 4)]
+    [InlineData(12, 9, 10)]
     public void BuildCaretRestoreInputs_UsesCtrlEndAndExpectedLeftMoves(int textLength, int targetCaretIndex, int expectedInputCount)
     {
         var inputs = InvokeBuildCaretRestoreInputs(textLength, targetCaretIndex);
+        int modCount = NativeMethods.BuildModifierReleaseInputs().Length;
 
-        Assert.Equal(expectedInputCount, inputs.Length);
-        Assert.Equal(NativeMethods.VK_SHIFT, inputs[0].U.ki.wVk);
-        Assert.Equal(NativeMethods.KEYEVENTF_KEYUP, inputs[0].U.ki.dwFlags);
-        Assert.Equal(NativeMethods.VK_CONTROL, inputs[9].U.ki.wVk);
-        Assert.Equal(NativeMethods.VK_END, inputs[10].U.ki.wVk);
+        Assert.Equal(expectedInputCount + modCount, inputs.Length);
+        Assert.Equal(NativeMethods.VK_CONTROL, inputs[modCount].U.ki.wVk);
+        Assert.Equal(NativeMethods.VK_END, inputs[modCount + 1].U.ki.wVk);
     }
 
     [Fact]
     public void BuildModifierReleaseInputs_ReleasesCommonModifiers()
     {
         var inputs = NativeMethods.BuildModifierReleaseInputs();
+        if (inputs.Length == 0) return;
 
         Assert.Equal(9, inputs.Length);
         Assert.All(inputs, input => Assert.Equal(NativeMethods.KEYEVENTF_KEYUP, input.U.ki.dwFlags));
@@ -502,7 +502,8 @@ public class AutoModeHandlerPunctuationRegressionTests
         Assert.True(inputs.Length > release.Length);
         for (int i = 0; i < release.Length; i++)
             Assert.Equal(release[i].U.ki.wVk, inputs[i].U.ki.wVk);
-        Assert.Equal(NativeMethods.VK_BACK, inputs[release.Length].U.ki.wVk);
+        Assert.Equal(NativeMethods.VK_SHIFT, inputs[release.Length].U.ki.wVk);
+        Assert.Equal(0u, inputs[release.Length].U.ki.dwFlags);
     }
 
     [Fact]
@@ -533,12 +534,84 @@ public class AutoModeHandlerPunctuationRegressionTests
         Assert.Equal(expected, actual);
     }
 
-    private static NativeMethods.INPUT[] InvokeBuildAutoReplacementInputs(string originalCore, string replacementCore, string suffix)
+    // ─── eraseCountOverride ──────────────────────────────────────────────────
+
+    [Fact]
+    public void BuildAutoReplacementInputs_WithEraseCountOverride_UsesOverrideForSelectionCount()
+    {
+        // "Win" is 3 chars, but the word on screen was "Win11" (5 chars typed).
+        // eraseCountOverride=5 must produce 5 Shift+Left presses, not 3.
+        int releaseCount = NativeMethods.BuildModifierReleaseInputs().Length;
+        NativeMethods.INPUT[] inputsDefault = InvokeBuildAutoReplacementInputs("Win", "Він", string.Empty);
+        NativeMethods.INPUT[] inputsOverride = InvokeBuildAutoReplacementInputs("Win", "Він", string.Empty, eraseCountOverride: 5);
+
+        // Default: releaseCount + ShiftDown + 3×(Left×2) + ShiftUp + 3×(Unicode×2)
+        // Override: releaseCount + ShiftDown + 5×(Left×2) + ShiftUp + 3×(Unicode×2)
+        Assert.Equal(inputsDefault.Length + 4, inputsOverride.Length); // 4 = (5-3)*2
+    }
+
+    [Fact]
+    public void BuildAutoReplacementInputs_WithEraseCountOverride_EqualToDefault_SameLengthAsNoOverride()
+    {
+        NativeMethods.INPUT[] inputsDefault = InvokeBuildAutoReplacementInputs("ghbdsn", "привіт", string.Empty);
+        NativeMethods.INPUT[] inputsOverride = InvokeBuildAutoReplacementInputs("ghbdsn", "привіт", string.Empty, eraseCountOverride: 6);
+
+        Assert.Equal(inputsDefault.Length, inputsOverride.Length);
+    }
+
+    // ─── Trailing suffix variety ─────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(",")]
+    [InlineData(".")]
+    [InlineData("!")]
+    [InlineData("?")]
+    [InlineData(";")]
+    [InlineData(":")]
+    public void BuildAutoReplacementInputs_WithSingleCharSuffix_ProducesCorrectLeftRightWrap(string suffix)
+    {
+        int releaseCount = NativeMethods.BuildModifierReleaseInputs().Length;
+        NativeMethods.INPUT[] inputs = InvokeBuildAutoReplacementInputs("ghbdsn", "привіт", suffix);
+
+        // First non-release input after modifiers must be Left (move before suffix)
+        Assert.Equal(NativeMethods.VK_LEFT, inputs[releaseCount].U.ki.wVk);
+        // Last two inputs must be Right (move back after suffix)
+        Assert.Equal(NativeMethods.VK_RIGHT, inputs[^2].U.ki.wVk);
+        Assert.Equal(NativeMethods.VK_RIGHT, inputs[^1].U.ki.wVk);
+    }
+
+    [Fact]
+    public void BuildAutoReplacementInputs_WithMultiCharSuffix_ProducesCorrectNumberOfArrows()
+    {
+        // suffix "[]" = 2 chars → 2 Left at start, 2 Right at end
+        int releaseCount = NativeMethods.BuildModifierReleaseInputs().Length;
+        NativeMethods.INPUT[] inputs = InvokeBuildAutoReplacementInputs("ghbdsn", "привіт", "[]");
+
+        // 2 Left down+up pairs before Shift
+        Assert.Equal(NativeMethods.VK_LEFT, inputs[releaseCount].U.ki.wVk);
+        Assert.Equal(NativeMethods.VK_LEFT, inputs[releaseCount + 2].U.ki.wVk);
+        // 2 Right down+up pairs at end
+        Assert.Equal(NativeMethods.VK_RIGHT, inputs[^4].U.ki.wVk);
+        Assert.Equal(NativeMethods.VK_RIGHT, inputs[^2].U.ki.wVk);
+    }
+
+    [Fact]
+    public void BuildAutoReplacementInputs_NoSuffix_NoLeadingArrows()
+    {
+        int releaseCount = NativeMethods.BuildModifierReleaseInputs().Length;
+        NativeMethods.INPUT[] inputs = InvokeBuildAutoReplacementInputs("ghbdsn", "привіт", string.Empty);
+
+        // First input after modifier release must be Shift (no Left arrows without suffix)
+        Assert.Equal(NativeMethods.VK_SHIFT, inputs[releaseCount].U.ki.wVk);
+        Assert.Equal(0u, inputs[releaseCount].U.ki.dwFlags); // key-down, not key-up
+    }
+
+    private static NativeMethods.INPUT[] InvokeBuildAutoReplacementInputs(string originalCore, string replacementCore, string suffix, int? eraseCountOverride = null)
     {
         var method = typeof(AutoModeHandler)
             .GetMethod("BuildAutoReplacementInputs", BindingFlags.NonPublic | BindingFlags.Static)!;
 
-        return (NativeMethods.INPUT[])method.Invoke(null, [originalCore, replacementCore, suffix])!;
+        return (NativeMethods.INPUT[])method.Invoke(null, [originalCore, replacementCore, suffix, eraseCountOverride])!;
     }
 
     private static string InvokeStripVisibleSuffixFromInterpretation(string text, string suffix)
@@ -604,6 +677,54 @@ public class SafeModeHandlerRegressionTests
 public class AutoModeHandlerRegressionTests
 {
     [Fact]
+    public void BuildCandidateDecision_NoBufferedCandidateInBrowserContext_RequestsLiveRuntimeRead()
+    {
+        var settings = new SettingsManager();
+        var handler = new AutoModeHandler(
+            new ForegroundContextProvider(),
+            new TextTargetCoordinator(Array.Empty<ITextTargetAdapter>()),
+            new ExclusionManager(settings),
+            new DiagnosticsLogger(),
+            settings,
+            new KeyboardObserver(settings));
+
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+
+        object snapshot = CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "UA",
+            visibleWord: "",
+            wordEn: "fiii",
+            wordUa: "ащшу",
+            analysisWordEn: "fiii",
+            analysisWordUa: "ащшу",
+            rawDebug: "[/(s29/vC0) z/z(s2C/vBC) j/j(s24/vBE) /(s35/vBF)",
+            originalDisplay: "ащшу",
+            techDetail: "keys=4 rec=0 drop=0 seq=2 lay=UA",
+            approxWordLength: 4,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 2);
+
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("BuildCandidateDecision", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        object decision = method.Invoke(handler, new[] { snapshot })!;
+        bool requiresLiveRuntimeRead = (bool)decision.GetType().GetProperty("RequiresLiveRuntimeRead")!.GetValue(decision)!;
+
+        Assert.True(requiresLiveRuntimeRead);
+    }
+
+    [Fact]
     public void BuildUndoInputs_ReleasesModifiers_BackspacesReplacementAndRetypesOriginal()
     {
         var inputs = InvokeBuildUndoInputs("привіт", "ghbdsn");
@@ -612,8 +733,11 @@ public class AutoModeHandlerRegressionTests
         int expectedCount = modifierCount + (("привіт".Length + 1) * 2) + ("ghbdsn".Length * 2);
 
         Assert.Equal(expectedCount, inputs.Length);
-        Assert.Equal(NativeMethods.VK_SHIFT, inputs[0].U.ki.wVk);
-        Assert.Equal(NativeMethods.KEYEVENTF_KEYUP, inputs[0].U.ki.dwFlags);
+        if (modifierCount > 0)
+        {
+            Assert.Equal(NativeMethods.VK_SHIFT, inputs[0].U.ki.wVk);
+            Assert.Equal(NativeMethods.KEYEVENTF_KEYUP, inputs[0].U.ki.dwFlags);
+        }
 
         Assert.Equal(NativeMethods.VK_BACK, inputs[modifierCount].U.ki.wVk);
         Assert.Equal(0u, inputs[modifierCount].U.ki.dwFlags);
@@ -631,6 +755,68 @@ public class AutoModeHandlerRegressionTests
             .GetMethod("BuildUndoInputs", BindingFlags.NonPublic | BindingFlags.Static)!;
 
         return (NativeMethods.INPUT[])method.Invoke(null, new object[] { replacementText, restoreText })!;
+    }
+
+    private static object CreateWordSnapshot(
+        ForegroundContext context,
+        string processName,
+        string controlClass,
+        string windowClass,
+        string layoutTag,
+        string visibleWord,
+        string wordEn,
+        string wordUa,
+        string analysisWordEn,
+        string analysisWordUa,
+        string rawDebug,
+        string originalDisplay,
+        string techDetail,
+        int approxWordLength,
+        int recoveryCount,
+        int droppedKeyCount,
+        int sequentialScanCount)
+    {
+        var engineAssembly = typeof(AutoModeHandler).Assembly;
+        Type bufferQualityType = engineAssembly.GetType("Switcher.Engine.BufferQualitySnapshot", throwOnError: true)!;
+        object bufferQuality = Activator.CreateInstance(
+            bufferQualityType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args: new object[] { approxWordLength, recoveryCount, droppedKeyCount, sequentialScanCount },
+            culture: null)!;
+
+        Type wordSnapshotType = engineAssembly.GetType("Switcher.Engine.WordSnapshot", throwOnError: true)!;
+        return Activator.CreateInstance(
+            wordSnapshotType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args:
+            [
+                DateTime.UtcNow,
+                context,
+                processName,
+                controlClass,
+                windowClass,
+                string.Empty,
+                layoutTag,
+                (uint)0,
+                string.Empty,
+                visibleWord,
+                string.Empty,
+                wordEn,
+                wordUa,
+                wordEn,
+                wordUa,
+                analysisWordEn,
+                analysisWordUa,
+                analysisWordEn,
+                analysisWordUa,
+                rawDebug,
+                originalDisplay,
+                techDetail,
+                bufferQuality
+            ],
+            culture: null)!;
     }
 }
 

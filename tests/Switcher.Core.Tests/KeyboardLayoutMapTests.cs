@@ -122,6 +122,8 @@ public class KeyboardLayoutMapTests
     [InlineData("Й", "Q")]
     [InlineData("Ц", "W")]
     [InlineData("У", "E")]
+    [InlineData("Х", "{")]
+    [InlineData("Ї", "}")]
     [InlineData("Ф", "A")]
     [InlineData("І", "S")]
     [InlineData("В", "D")]

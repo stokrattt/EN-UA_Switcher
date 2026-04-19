@@ -67,6 +67,18 @@
                                         <TextBlock Text="Enable Auto Mode (automatic correction after Space / Enter / Tab)"
                                                    TextWrapping="Wrap" />
                                     </CheckBox>
+                                    <CheckBox x:Name="ChkSafeOnlyAutoMode"
+                                              Margin="0,6,0,0"
+                                              ToolTip="Use only exact-slice safe replacement paths. Browser best-effort auto-replace is skipped.">
+                                        <TextBlock Text="Safe-only browser auto-replace (requires Auto Mode)"
+                                                   TextWrapping="Wrap" />
+                                    </CheckBox>
+                                    <CheckBox x:Name="ChkElectronUiaPath"
+                                              Margin="0,6,0,0"
+                                              ToolTip="Use Backspace+Unicode replacement in Electron apps (VS Code, Slack, Discord, etc.) instead of Shift+Left selection. Avoids race conditions but is experimental.">
+                                        <TextBlock Text="Electron app path: UIA read + Backspace replace (requires Auto Mode)"
+                                                   TextWrapping="Wrap" />
+                                    </CheckBox>
 
                                     <Separator />
 
@@ -117,13 +129,28 @@
                                                Text="A few practical toggles for startup behavior and troubleshooting."
                                                Margin="0,0,0,8" />
 
+                                    <CheckBox x:Name="ChkRunAtStartup"
+                                              Content="Run at Windows startup"
+                                              ToolTip="Automatically start EN-UA Switcher when you log in to Windows." />
                                     <CheckBox x:Name="ChkStartMinimized"
                                               Content="Start minimized to system tray" />
                                     <CheckBox x:Name="ChkDiagnostics"
                                               Content="Enable diagnostics logging" />
+                                    <CheckBox x:Name="ChkSelectorDiagnosticsExport"
+                                              Margin="0,6,0,0"
+                                              ToolTip="Writes opt-in structured selector examples for ML analysis to a separate export file.">
+                                        <TextBlock Text="Export structured selector examples (opt-in ML diagnostics)"
+                                                   TextWrapping="Wrap" />
+                                    </CheckBox>
+                                    <CheckBox x:Name="ChkLearnedSelectorGate"
+                                              Margin="0,6,0,0"
+                                              ToolTip="Keeps heuristics as the primary generator and lets the learned selector reject only low-confidence borderline candidates.">
+                                        <TextBlock Text="Enable learned selector rejection gate (experimental)"
+                                                   TextWrapping="Wrap" />
+                                    </CheckBox>
                                     <TextBlock Style="{StaticResource MutedTextStyle}"
                                                Margin="32,6,0,0"
-                                               Text="Diagnostics log every correction attempt, but not the full field contents." />
+                                               Text="Standard diagnostics stay redacted. Structured selector export writes examples only when you enable it." />
                                 </StackPanel>
                             </Border>
                         </StackPanel>
@@ -154,7 +181,8 @@
                                         <TextBox Grid.Column="1"
                                                  x:Name="TxtLastWordHotkey"
                                                  IsReadOnly="True"
-                                                 Cursor="Arrow" />
+                                                 ToolTip="Click here, then press your key combination (e.g. Ctrl+Shift+K). At least one modifier required."
+                                                 PreviewKeyDown="TxtHotkey_PreviewKeyDown" />
                                     </Grid>
 
                                     <Grid>
@@ -166,7 +194,8 @@
                                         <TextBox Grid.Column="1"
                                                  x:Name="TxtSelectionHotkey"
                                                  IsReadOnly="True"
-                                                 Cursor="Arrow" />
+                                                 ToolTip="Click here, then press your key combination (e.g. Ctrl+Shift+L). At least one modifier required."
+                                                 PreviewKeyDown="TxtHotkey_PreviewKeyDown" />
                                     </Grid>
                                 </StackPanel>
                             </Border>
@@ -176,7 +205,7 @@
                                     <TextBlock Text="NOTE" Style="{StaticResource EyebrowTextStyle}" />
                                     <TextBlock Text="Current behavior" Style="{StaticResource SectionHeaderStyle}" />
                                     <TextBlock Style="{StaticResource MutedTextStyle}"
-                                               Text="Hotkey editing is not exposed in this build yet. Current defaults: Ctrl+Shift+K for the last word and Ctrl+Shift+L for selected text." />
+                                               Text="Click a hotkey field and press your desired combination (modifier + letter/key). At least one of Ctrl, Shift, or Alt is required. Changes take effect after Save." />
                                 </StackPanel>
                             </Border>
                         </StackPanel>
@@ -214,6 +243,9 @@
                                         <ComboBox x:Name="CmbRunningProcesses"
                                                    Grid.Column="0"
                                                    Margin="0,0,10,0"
+                                                   IsEditable="True"
+                                                   IsTextSearchEnabled="True"
+                                                   StaysOpenOnEdit="True"
                                                    ToolTip="Click to choose a running process"
                                                    GotKeyboardFocus="CmbRunningProcesses_GotKeyboardFocus"
                                                    PreviewMouseLeftButtonDown="CmbRunningProcesses_PreviewMouseLeftButtonDown"
@@ -375,11 +407,12 @@
                             <Border Style="{StaticResource SubtleCardBorderStyle}">
                                 <StackPanel>
                                     <TextBlock Text="BUILD" Style="{StaticResource EyebrowTextStyle}" />
-                                     <TextBlock Text="Version" Style="{StaticResource SectionHeaderStyle}" />
-                                     <TextBlock Style="{StaticResource MutedTextStyle}"
-                                                Text="1.2.0 — build 13-Apr-2026" />
-                                 </StackPanel>
-                             </Border>
+                                    <TextBlock Text="Version" Style="{StaticResource SectionHeaderStyle}" />
+                                    <TextBlock x:Name="TxtAboutVersion"
+                                               Style="{StaticResource MutedTextStyle}"
+                                               Text="Detecting version..." />
+                                </StackPanel>
+                            </Border>
                         </StackPanel>
                     </ScrollViewer>
                 </TabItem>
@@ -400,7 +433,9 @@
                         Style="{StaticResource SecondaryButtonStyle}"
                         Margin="0,0,10,0"
                         Click="BtnCancel_Click" />
-                <Button Content="Save"
+                <Button x:Name="BtnSave"
+                        Content="Saved"
+                        IsEnabled="False"
                         Click="BtnSave_Click" />
             </StackPanel>
         </Border>

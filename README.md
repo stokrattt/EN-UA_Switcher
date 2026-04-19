@@ -185,6 +185,14 @@ dotnet test .\tests\Switcher.Core.Tests\Switcher.Core.Tests.csproj -v minimal
 dotnet test .\tests\Switcher.Engine.Tests\Switcher.Engine.Tests.csproj -v minimal
 ```
 
+Run the proactive bulk audit:
+
+```powershell
+.\scripts\bulk-auto-eval.ps1 -FetchLargeWordLists -EnLimit 50000 -UaLimit 50000 -ContextSample 1500
+```
+
+This fetches `50k` English and Ukrainian corpora into `artifacts\bulk-audit` and runs the `tools\BulkEval` scenario audit over word, sentence, chat, short-phrase, brand, and mixed tech contexts.
+
 ## Where The EXE Is
 
 This repo is configured to place the app build output into the repository-level `bin` folder.
