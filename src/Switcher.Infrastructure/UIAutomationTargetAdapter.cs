@@ -54,11 +54,8 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
         // Don't compete with native edit adapter
         if (NativeEditClasses.Contains(cls)) return TargetSupport.Unsupported;
 
-        // Allow real browsers and known Electron apps (like antigravity, VS Code, Slack etc)
-        if (!BrowserProcesses.Contains(context.ProcessName) && !ElectronProcessCatalog.IsElectronProcess(context.ProcessName))
-            return TargetSupport.Unsupported;
-
-        // Try to get UIA element and check for writable ValuePattern
+        // If it's explicitly an unsafe custom editor (determined earlier by AutoModeHandler), it should've been routed elsewhere,
+        // but if it arrives here, we evaluate it directly on whether it has a writable ValuePattern.
         IntPtr hwnd = context.FocusedControlHwnd != IntPtr.Zero
             ? context.FocusedControlHwnd
             : context.Hwnd;

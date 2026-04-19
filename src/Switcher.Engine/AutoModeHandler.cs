@@ -425,6 +425,13 @@ public class AutoModeHandler
 
         return profile switch
         {
+            ReplacementSafetyProfile.NativeSafe => new ReplacementPlan(
+                snapshot,
+                decision,
+                ReplacementSafetyProfile.NativeSafe,
+                ReplacementExecutionPath.NativeSelectionTransaction,
+                "SendInput",
+                $"profile={ReplacementSafetyProfile.NativeSafe} path={ReplacementExecutionPath.NativeSelectionTransaction} surface={surface.Summary}"),
             ReplacementSafetyProfile.BrowserValuePatternSafe => new ReplacementPlan(
                 snapshot,
                 decision,
@@ -499,7 +506,8 @@ public class AutoModeHandler
 
         string replacementCore = TrimLiteralTrailingSuffix(candidate.ConvertedText, snapshot.VisibleTrailingSuffix);
         string originalCore = TrimLiteralTrailingSuffix(candidate.OriginalText, snapshot.VisibleTrailingSuffix);
-        var inputs = BuildAutoReplacementInputs(originalCore, replacementCore, snapshot.VisibleTrailingSuffix);
+        int eraseOverride = Math.Max(snapshot.BufferQuality.ApproxWordLength - snapshot.VisibleTrailingSuffix.Length, originalCore.Length);
+        var inputs = BuildAutoReplacementInputs(originalCore, replacementCore, snapshot.VisibleTrailingSuffix, eraseOverride);
         uint sent = NativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<NativeMethods.INPUT>());
         bool success = sent == (uint)inputs.Length;
 
@@ -558,7 +566,11 @@ public class AutoModeHandler
 
             if (string.IsNullOrWhiteSpace(actualWord) || actualWord.Length < 2)
             {
-                LogSkip(snapshot, plan.AdapterName, "Browser ValuePattern aborted: unable to read current word");
+                _diagnostics.Log(snapshot.ProcessName, snapshot.ControlClass, plan.AdapterName, true, OperationType.AutoMode,
+                    snapshot.OriginalDisplay, null, DiagnosticResult.Skipped, "Browser ValuePattern aborted: unable to read current word -> Fallback to NativeSafe");
+                
+                ExecuteNativeReplacementTransaction(new ReplacementPlan(
+                    snapshot, plan.Decision, ReplacementSafetyProfile.NativeSafe, ReplacementExecutionPath.NativeSelectionTransaction, "SendInput", "Fallback from BrowserValuePatternSafe"));
                 return;
             }
 
@@ -1128,9 +1140,9 @@ public class AutoModeHandler
         }
     }
 
-    private static bool IsBrowserLikeContext(ForegroundContext context) =>
+    private bool IsBrowserLikeContext(ForegroundContext context) =>
         BrowserProcesses.Contains(context.ProcessName)
-        || ElectronProcessCatalog.IsElectronProcess(context.ProcessName)
+        || (_settings.Current.ElectronUiaPathEnabled && ElectronProcessCatalog.IsElectronProcess(context.ProcessName))
         || BrowserLikeWindowClasses.Contains(context.FocusedControlClass)
         || BrowserLikeWindowClasses.Contains(context.WindowClass);
 
@@ -1142,6 +1154,12 @@ public class AutoModeHandler
     {
         if (!isBrowserLikeContext)
             return ReplacementSafetyProfile.NativeSafe;
+
+        if (unsafeCustomSurface)
+            return safeOnlyMode ? ReplacementSafetyProfile.UnsafeSkip : ReplacementSafetyProfile.NativeSafe;
+
+        if (unsafeCustomSurface)
+            return safeOnlyMode ? ReplacementSafetyProfile.UnsafeSkip : ReplacementSafetyProfile.NativeSafe;
 
         if (hasWritableValuePattern)
             return ReplacementSafetyProfile.BrowserValuePatternSafe;
@@ -1436,9 +1454,7 @@ public class AutoModeHandler
         int eraseCount = eraseCountOverride ?? originalCore.Length;
         int totalInputs = modifierRelease.Length
             + (suffixLen * 2)
-            + 1
             + (eraseCount * 2)
-            + 1
             + (replacementCore.Length * 2)
             + (suffixLen * 2);
         var inputs = new NativeMethods.INPUT[totalInputs];
@@ -1453,15 +1469,11 @@ public class AutoModeHandler
             inputs[idx++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: true);
         }
 
-        inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_SHIFT, keyUp: false);
-
         for (int i = 0; i < eraseCount; i++)
         {
-            inputs[idx++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: false);
-            inputs[idx++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: true);
+            inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: false);
+            inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_BACK, keyUp: true);
         }
-
-        inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_SHIFT, keyUp: true);
 
         foreach (char c in replacementCore)
         {

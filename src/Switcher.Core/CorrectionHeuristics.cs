@@ -276,7 +276,8 @@ public static class CorrectionHeuristics
         bool sourceDictionaryHit = containsDigit
             ? IsLikelyEnglishToken(lettersOnly)
             : IsLikelyEnglishToken(lower) || IsLikelyEnglishToken(lowerTrimmed);
-        if (sourceDictionaryHit || sourceLooksLikeTechToken)
+            
+        if (mode != CorrectionMode.Safe && (sourceDictionaryHit || sourceLooksLikeTechToken))
             return null;
 
         // Try to convert EN→UA
@@ -576,6 +577,9 @@ public static class CorrectionHeuristics
             ? UaDictionary.Contains(lettersOnly)
             : UaDictionary.Contains(lower) || UaDictionary.Contains(lowerTrimmed);
 
+        if (mode != CorrectionMode.Safe && sourceDictionaryHit)
+            return null;
+
         // Try to convert UA→EN
         string? converted = KeyboardLayoutMap.ConvertUaToEn(word, strict: !containsDigit);
         if (converted == null) return null;
@@ -635,11 +639,18 @@ public static class CorrectionHeuristics
         // it cannot be real English text — reject without needing a dictionary.
         double enZeroThreshold = convertedLower.Length <= 4 ? 0.34 : 0.55;
         double targetZeroRatio = ZeroBigramRatio(convertedLower, EnBigramFreq);
-        bool allowShortTechLatinBypass = tokenLength is >= 3 and <= 4
+        bool isVowellessAcronym = !containsDigit 
+            && tokenLength is >= 3 and <= 5 
+            && targetLooksLikeTechLatinWord
+            && sourceScore <= 0.20
+            && sourceZeroRatio >= 0.66
+            && !convertedLower.Any(c => EnVowels.Contains(c));
+
+        bool allowShortTechLatinBypass = (tokenLength is >= 3 and <= 4
             && sourceScore <= 0.10
             && sourceZeroRatio >= 0.66
             && targetScore >= 0.40
-            && convertedLower.Any(c => c is 'x' or 'z' or 'v' or 'k' or 't' or 'p' or 'g' or 'd' or 'm');
+            && convertedLower.Any(c => c is 'x' or 'z' or 'v' or 'k' or 't' or 'p' or 'g' or 'd' or 'm')) || isVowellessAcronym;
         if (!targetLexicalHit && !containsDigit && targetZeroRatio > enZeroThreshold && !allowShortTechLatinBypass)
             return null;
 
@@ -785,9 +796,9 @@ public static class CorrectionHeuristics
             && (targetLooksLikeTechLatinWord || allowShortTechLatinBypass)
             && !sourceDictionaryHit
             && sourceScore <= 0.34
-            && effectiveTargetScore >= 0.28
-            && confidence >= 0.20
-            && (tokenLength >= 6 || allowShortTechLatinBypass))
+            && (effectiveTargetScore >= 0.28 || isVowellessAcronym)
+            && (confidence >= 0.20 || isVowellessAcronym)
+            && (tokenLength >= 6 || allowShortTechLatinBypass || isVowellessAcronym))
         {
             string fullOriginalTechLatin = prefix + word + suffix;
             return FinalizeCandidate(

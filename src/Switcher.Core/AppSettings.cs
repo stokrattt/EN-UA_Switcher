@@ -7,7 +7,7 @@ public class AppSettings
 {
     public bool AutoModeEnabled { get; set; } = false;
     public bool SafeOnlyAutoMode { get; set; } = false;
-    public bool ElectronUiaPathEnabled { get; set; } = true;
+    public bool ElectronUiaPathEnabled { get; set; } = false;
     public bool DiagnosticsEnabled { get; set; } = true;
     public bool SelectorDiagnosticsExportEnabled { get; set; } = false;
     public bool LearnedSelectorGateEnabled { get; set; } = false;

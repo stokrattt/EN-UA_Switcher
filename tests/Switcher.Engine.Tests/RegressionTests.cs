@@ -502,7 +502,7 @@ public class AutoModeHandlerPunctuationRegressionTests
         Assert.True(inputs.Length > release.Length);
         for (int i = 0; i < release.Length; i++)
             Assert.Equal(release[i].U.ki.wVk, inputs[i].U.ki.wVk);
-        Assert.Equal(NativeMethods.VK_SHIFT, inputs[release.Length].U.ki.wVk);
+        Assert.Equal(NativeMethods.VK_BACK, inputs[release.Length].U.ki.wVk);
         Assert.Equal(0u, inputs[release.Length].U.ki.dwFlags);
     }
 
@@ -601,8 +601,8 @@ public class AutoModeHandlerPunctuationRegressionTests
         int releaseCount = NativeMethods.BuildModifierReleaseInputs().Length;
         NativeMethods.INPUT[] inputs = InvokeBuildAutoReplacementInputs("ghbdsn", "привіт", string.Empty);
 
-        // First input after modifier release must be Shift (no Left arrows without suffix)
-        Assert.Equal(NativeMethods.VK_SHIFT, inputs[releaseCount].U.ki.wVk);
+        // First input after modifier release must be Backspace (no Left arrows without suffix)
+        Assert.Equal(NativeMethods.VK_BACK, inputs[releaseCount].U.ki.wVk);
         Assert.Equal(0u, inputs[releaseCount].U.ki.dwFlags); // key-down, not key-up
     }
 
