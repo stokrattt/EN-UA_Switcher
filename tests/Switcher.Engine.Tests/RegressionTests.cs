@@ -747,6 +747,7 @@ public class AutoModeHandlerRegressionTests
             controlClass: "Chrome_RenderWidgetHostHWND",
             windowClass: "Chrome_WidgetWin_1",
             layoutTag: "UA",
+            liveWord: "",
             visibleWord: "",
             wordEn: "fiii",
             wordUa: "ащшу",
@@ -767,6 +768,124 @@ public class AutoModeHandlerRegressionTests
         bool requiresLiveRuntimeRead = (bool)decision.GetType().GetProperty("RequiresLiveRuntimeRead")!.GetValue(decision)!;
 
         Assert.True(requiresLiveRuntimeRead);
+    }
+
+    [Fact]
+    public void ResolveCandidateDecision_NativeContextWithoutCandidate_UsesLiveWordFallback()
+    {
+        var settings = new SettingsManager();
+        var handler = new AutoModeHandler(
+            new ForegroundContextProvider(),
+            new TextTargetCoordinator(Array.Empty<ITextTargetAdapter>()),
+            new ExclusionManager(settings),
+            new DiagnosticsLogger(),
+            settings,
+            new KeyboardObserver(settings));
+
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "notepad",
+            123,
+            "Edit",
+            "Notepad");
+
+        object snapshot = CreateWordSnapshot(
+            context,
+            processName: "notepad",
+            controlClass: "Edit",
+            windowClass: "Notepad",
+            layoutTag: "EN",
+            liveWord: "ghbdsn",
+            visibleWord: "ghbdsn",
+            wordEn: "ghbdsn",
+            wordUa: "привіт",
+            analysisWordEn: "zzzzzz",
+            analysisWordUa: "яяяяяя",
+            rawDebug: "test",
+            originalDisplay: "ghbdsn",
+            techDetail: "keys=6 rec=1 drop=0 seq=0 lay=EN",
+            approxWordLength: 6,
+            recoveryCount: 1,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+
+        var initialDecision = new CandidateDecision(
+            Candidate: null,
+            Source: CandidateSource.None,
+            RequiresLiveRuntimeRead: true,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "buffer fallback needed");
+
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("ResolveCandidateDecision", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        CandidateDecision resolved = (CandidateDecision)method.Invoke(handler, [snapshot, initialDecision])!;
+
+        Assert.NotNull(resolved.Candidate);
+        Assert.False(resolved.RequiresLiveRuntimeRead);
+        Assert.Equal("ghbdsn", resolved.Candidate!.OriginalText);
+        Assert.Equal("привіт", resolved.Candidate.ConvertedText);
+        Assert.Contains("native live read fallback", resolved.Reason);
+    }
+
+    [Fact]
+    public void ResolveCandidateDecision_NativeContextWithoutCandidateAndWithoutLiveWord_DisablesAsyncFallback()
+    {
+        var settings = new SettingsManager();
+        var handler = new AutoModeHandler(
+            new ForegroundContextProvider(),
+            new TextTargetCoordinator(Array.Empty<ITextTargetAdapter>()),
+            new ExclusionManager(settings),
+            new DiagnosticsLogger(),
+            settings,
+            new KeyboardObserver(settings));
+
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "notepad",
+            123,
+            "Edit",
+            "Notepad");
+
+        object snapshot = CreateWordSnapshot(
+            context,
+            processName: "notepad",
+            controlClass: "Edit",
+            windowClass: "Notepad",
+            layoutTag: "UA",
+            liveWord: "",
+            visibleWord: "кубік",
+            wordEn: "re,br",
+            wordUa: "кубік",
+            analysisWordEn: "re,br",
+            analysisWordUa: "кубік",
+            rawDebug: "test",
+            originalDisplay: "кубік",
+            techDetail: "keys=5 rec=1 drop=0 seq=0 lay=UA",
+            approxWordLength: 5,
+            recoveryCount: 1,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+
+        var initialDecision = new CandidateDecision(
+            Candidate: null,
+            Source: CandidateSource.None,
+            RequiresLiveRuntimeRead: true,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "buffer fallback needed");
+
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("ResolveCandidateDecision", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        CandidateDecision resolved = (CandidateDecision)method.Invoke(handler, [snapshot, initialDecision])!;
+
+        Assert.Null(resolved.Candidate);
+        Assert.False(resolved.RequiresLiveRuntimeRead);
+        Assert.Contains("native live read unavailable", resolved.Reason);
     }
 
     [Fact]
@@ -808,6 +927,7 @@ public class AutoModeHandlerRegressionTests
         string controlClass,
         string windowClass,
         string layoutTag,
+        string liveWord,
         string visibleWord,
         string wordEn,
         string wordUa,
@@ -846,7 +966,7 @@ public class AutoModeHandlerRegressionTests
                 string.Empty,
                 layoutTag,
                 (uint)0,
-                string.Empty,
+                liveWord,
                 visibleWord,
                 string.Empty,
                 wordEn,

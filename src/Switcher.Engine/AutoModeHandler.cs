@@ -124,7 +124,7 @@ public class AutoModeHandler
             return;
         }
 
-        CandidateDecision decision = BuildCandidateDecision(snapshot);
+        CandidateDecision decision = ResolveCandidateDecision(snapshot, BuildCandidateDecision(snapshot));
         if (!decision.ShouldReplace && !decision.RequiresLiveRuntimeRead)
         {
             LogSkip(snapshot, "CandidateDecision", decision.Reason);
@@ -320,6 +320,30 @@ public class AutoModeHandler
         return ApplyLearnedSelector(snapshot, candidate, source, candidate.Reason);
     }
 
+    private CandidateDecision ResolveCandidateDecision(WordSnapshot snapshot, CandidateDecision decision)
+    {
+        if (decision.Candidate is not null || IsBrowserLikeContext(snapshot.Context))
+            return decision;
+
+        if (!decision.RequiresLiveRuntimeRead)
+            return decision;
+
+        if (string.IsNullOrWhiteSpace(snapshot.LiveWord) || snapshot.LiveWord.Length < 2)
+        {
+            return decision with
+            {
+                RequiresLiveRuntimeRead = false,
+                Reason = $"{decision.Reason}; native live read unavailable"
+            };
+        }
+
+        CandidateDecision liveDecision = BuildLiveRuntimeCandidateDecision(snapshot, snapshot.LiveWord);
+        return liveDecision with
+        {
+            Reason = $"{liveDecision.Reason}; native live read fallback"
+        };
+    }
+
     private CandidateDecision ApplyLearnedSelector(
         WordSnapshot snapshot,
         CorrectionCandidate candidate,
@@ -497,6 +521,7 @@ public class AutoModeHandler
         if (candidate is null)
         {
             LogSkip(snapshot, plan.AdapterName, "Native transaction skipped: no candidate");
+            TryReinjectDelimiter(plan);
             return;
         }
 
