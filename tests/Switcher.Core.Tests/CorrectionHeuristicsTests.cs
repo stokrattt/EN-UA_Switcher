@@ -284,6 +284,25 @@ public class CorrectionHeuristicsTests
     }
 
     [Theory]
+    [InlineData("asdfg")]
+    [InlineData("qwert")]
+    public void Evaluate_KeyboardRowLatinNoise_AutoMode_DoesNotConvert(string word)
+    {
+        var result = Evaluate(word, CorrectionMode.Auto);
+        Assert.Null(result);
+    }
+
+    [Theory]
+    [InlineData("фівап")]
+    [InlineData("йцуке")]
+    [InlineData("нгшщз")]
+    public void Evaluate_KeyboardRowCyrillicNoise_AutoMode_DoesNotConvert(string word)
+    {
+        var result = Evaluate(word, CorrectionMode.Auto);
+        Assert.Null(result);
+    }
+
+    [Theory]
     [InlineData("win11")]
     [InlineData("rtx4090")]
     [InlineData("iphone15")]

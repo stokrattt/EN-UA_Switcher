@@ -350,6 +350,17 @@ public static class CorrectionHeuristics
             CorrectionDirection.EnToUa,
             wrapped: hasBoundaryLayoutLetter || prefix.Length > 0 || suffix.Length > 0);
 
+        if (mode == CorrectionMode.Auto
+            && !containsDigit
+            && !sourceDictionaryHit
+            && !targetDictionaryHit
+            && tokenLength >= 5
+            && (LooksLikeKeyboardRowRun(lower) || LooksLikeKeyboardRowRun(convertedLower))
+            && !targetHasUkrainianMorphologySignal)
+        {
+            return null;
+        }
+
         if (mode == CorrectionMode.Auto && !containsDigit)
         {
             if (tokenLength == 1 && !ShouldConvertSingleLetterToken(word, sourceScore, effectiveTargetScore, sourceDictionaryHit, targetDictionaryHit, convertedLower, CorrectionDirection.EnToUa))
@@ -709,6 +720,19 @@ public static class CorrectionHeuristics
             return null;
 
         double effectiveTargetScore = Clamp01(targetScore + ComputeStrongShapeBonus(targetScore, targetZeroRatio, targetLexicalHit, tokenLength));
+
+        if (mode == CorrectionMode.Auto
+            && !containsDigit
+            && !sourceDictionaryHit
+            && !targetDictionaryHit
+            && tokenLength >= 5
+            && (LooksLikeKeyboardRowRun(lower) || LooksLikeKeyboardRowRun(convertedLower))
+            && !targetConversationalHit
+            && !targetLooksLikeTechLatinWord
+            && !targetLooksLikeTechTextToken)
+        {
+            return null;
+        }
 
         // Block repetitive noise: if both source and converted have low character diversity,
         // it's random key mashing, not a real word typed in the wrong layout.
@@ -1547,6 +1571,16 @@ public static class CorrectionHeuristics
         "wsl", "html", "json", "yaml", "xml", "css"
     };
 
+    private static readonly string[] KeyboardRows =
+    [
+        "qwertyuiop",
+        "asdfghjkl",
+        "zxcvbnm",
+        "йцукенгшщзх",
+        "фівапролджє",
+        "ячсмитьбю"
+    ];
+
     private static readonly string[] UkrainianMorphologyEndings =
     [
         "ами", "ями", "ові", "еві", "ому", "ими", "іми",
@@ -1962,6 +1996,20 @@ public static class CorrectionHeuristics
 
         return HasTechnicalMarker(lower)
             || (ScoreEnglish(lower) >= 0.34 && lower.Any(c => c is 'p' or 'h' or 'x' or 'g' or 'k' or 'v'));
+    }
+
+    private static bool LooksLikeKeyboardRowRun(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+            return false;
+
+        string lower = ExtractLettersOnly(token).ToLowerInvariant();
+        if (lower.Length < 5 || lower.Length > 10 || !lower.All(char.IsLetter))
+            return false;
+
+        return KeyboardRows.Any(row =>
+            row.Contains(lower, StringComparison.Ordinal)
+            || new string(row.Reverse().ToArray()).Contains(lower, StringComparison.Ordinal));
     }
 
     private static bool LooksLikeTechnicalTextToken(string token)
