@@ -273,11 +273,18 @@ public static class CorrectionHeuristics
         // If the word is a known English word → very likely correct layout → do NOT convert
         // Also check with trailing keyboard-mapped punctuation stripped (e.g., "hello." → "hello")
         string lowerTrimmed = lower.TrimEnd('.', ',', ';', ':', '<', '>');
+        bool sourceLooksLikeTechTextToken = !containsDigit
+            && (LooksLikeTechnicalTextToken(lower) || LooksLikeTechnicalTextToken(lowerTrimmed));
+        bool sourceProtectedShortLatinToken = !containsDigit && HasProtectedShortLatinToken(lowerTrimmed);
         bool sourceDictionaryHit = containsDigit
             ? IsLikelyEnglishToken(lettersOnly)
             : IsLikelyEnglishToken(lower) || IsLikelyEnglishToken(lowerTrimmed);
             
-        if (mode != CorrectionMode.Safe && (sourceDictionaryHit || sourceLooksLikeTechToken))
+        if (mode != CorrectionMode.Safe
+            && (sourceDictionaryHit
+                || sourceLooksLikeTechToken
+                || sourceLooksLikeTechTextToken
+                || sourceProtectedShortLatinToken))
             return null;
 
         // Try to convert EN→UA
@@ -295,6 +302,9 @@ public static class CorrectionHeuristics
         bool targetDictionaryHit = containsDigit
             ? UaDictionary.Contains(convertedLettersOnly)
             : UaDictionary.Contains(convertedLower);
+        bool targetHasUkrainianMorphologySignal = HasUkrainianMorphologySignal(convertedLower);
+        bool targetHasInternalSoftSignSignal = HasInternalSoftSignSignal(convertedLower);
+        bool targetHasDistinctUkrainianLetter = convertedLower.Any(c => c is 'і' or 'ї' or 'є' or 'ґ');
         bool singleTokenAllowlisted = tokenLength == 1
             && IsAutoSingleAllowlisted(convertedLower, CorrectionDirection.EnToUa);
         bool shortTokenAllowlisted = tokenLength == 2
@@ -320,7 +330,18 @@ public static class CorrectionHeuristics
             && tokenLength == 3
             && hasLeadingLayoutLetter
             && targetZeroRatio <= 0.50;
-        if (!targetDictionaryHit && !containsDigit && targetZeroRatio > uaZeroThreshold && !allowBoundaryShortShape)
+        bool allowShortDistinctUaShape = mode == CorrectionMode.Auto
+            && !containsDigit
+            && tokenLength == 3
+            && word.All(char.IsLetter)
+            && targetHasDistinctUkrainianLetter
+            && targetScore >= 0.12;
+        if (!targetDictionaryHit
+            && !containsDigit
+            && targetZeroRatio > uaZeroThreshold
+            && !allowBoundaryShortShape
+            && !allowShortDistinctUaShape
+            && !targetHasUkrainianMorphologySignal)
             return null;
 
         double effectiveTargetScore = Clamp01(targetScore + ComputeStrongShapeBonus(targetScore, targetZeroRatio, targetDictionaryHit, tokenLength));
@@ -382,9 +403,6 @@ public static class CorrectionHeuristics
                 targetDictionaryHit);
         }
 
-        bool targetHasUkrainianMorphologySignal = HasUkrainianMorphologySignal(convertedLower);
-        bool targetHasInternalSoftSignSignal = HasInternalSoftSignSignal(convertedLower);
-
         if (mode == CorrectionMode.Auto
             && !containsDigit
             && !sourceDictionaryHit
@@ -432,9 +450,9 @@ public static class CorrectionHeuristics
             && !targetDictionaryHit
             && tokenLength >= 5
             && targetHasUkrainianMorphologySignal
-            && effectiveTargetScore >= 0.38
-            && confidence >= 0.28
-            && sourceScore <= effectiveTargetScore + 0.12)
+            && effectiveTargetScore >= 0.30
+            && confidence >= 0.18
+            && sourceScore <= effectiveTargetScore + 0.06)
         {
             string fullMorphology = prefix + converted + suffix;
             string fullOriginalMorphology = prefix + word + suffix;
@@ -475,6 +493,35 @@ public static class CorrectionHeuristics
                 CorrectionDirection.EnToUa,
                 Math.Max(confidence, 0.50),
                 $"Latin→UA strong-shape src={sourceScore:F2} dst={effectiveTargetScore:F2} edge={targetBoundaryAffinity:F2}",
+                mode,
+                sourceScore,
+                effectiveTargetScore,
+                sourceDictionaryHit,
+                targetDictionaryHit);
+        }
+
+        if (mode == CorrectionMode.Auto
+            && !containsDigit
+            && !sourceDictionaryHit
+            && !targetDictionaryHit
+            && !sourceProtectedShortLatinToken
+            && tokenLength == 3
+            && word.All(char.IsLetter)
+            && targetHasDistinctUkrainianLetter
+            && sourceScore <= 0.30
+            && effectiveTargetScore >= 0.12
+            && effectiveTargetScore >= sourceScore - 0.02)
+        {
+            string fullShortUaShape = prefix + converted + suffix;
+            string fullOriginalShortUaShape = prefix + word + suffix;
+            return FinalizeCandidate(
+                fullOriginalShortUaShape,
+                fullShortUaShape,
+                word,
+                converted,
+                CorrectionDirection.EnToUa,
+                Math.Max(confidence, 0.48),
+                $"Latin→UA short-ua-shape src={sourceScore:F2} dst={effectiveTargetScore:F2}",
                 mode,
                 sourceScore,
                 effectiveTargetScore,
@@ -608,6 +655,7 @@ public static class CorrectionHeuristics
         bool targetConversationalHit = !containsDigit && EnglishConversationalTokens.Contains(convertedLower);
         bool targetLooksLikeTechToken = containsDigit && LooksLikeTechnicalLatinToken(convertedLettersOnly);
         bool targetLooksLikeTechTextToken = !containsDigit && LooksLikeTechnicalTextToken(convertedLower);
+        bool sourceHasUkrainianMorphologySignal = HasUkrainianMorphologySignal(lower);
         bool singleTokenAllowlisted = tokenLength == 1
             && IsAutoSingleAllowlisted(convertedLower, CorrectionDirection.UaToEn);
         bool shortTokenAllowlisted = tokenLength == 2
@@ -630,10 +678,16 @@ public static class CorrectionHeuristics
         bool targetStrongEnglishShape = !containsDigit
             && !targetDictionaryHit
             && !sourceDictionaryHit
-            && sourceScore <= 0.32
+            && tokenLength >= 4
+            && sourceScore <= 0.40
             && HasStrongEnglishShapeSignal(convertedLower);
-        bool targetLooksLikeTechLatinWord = !containsDigit && LooksLikeTechnicalLatinToken(convertedLower);
+        bool targetLooksLikeTechLatinWord = !containsDigit && LooksLikeTechnicalLatinWord(convertedLower);
         bool targetLexicalHit = targetDictionaryHit || targetStrongEnglishShape;
+        bool sourceLooksPlausiblyUkrainian = sourceHasUkrainianMorphologySignal
+            || lower.Any(c => c is 'і' or 'ї' or 'є' or 'ґ')
+            || (tokenLength <= 4
+                && sourceScore >= 0.14
+                && ComputeVowelRatio(lower, englishLike: false) >= 0.25);
 
         // Algorithmic guard: if the converted result has many impossible EN bigrams,
         // it cannot be real English text — reject without needing a dictionary.
@@ -729,6 +783,31 @@ public static class CorrectionHeuristics
         }
 
         if (mode == CorrectionMode.Auto
+            && !containsDigit
+            && !sourceDictionaryHit
+            && !targetLexicalHit
+            && !targetConversationalHit
+            && !targetLooksLikeTechLatinWord
+            && !targetLooksLikeTechTextToken
+            && tokenLength <= 4
+            && sourceScore >= 0.18)
+        {
+            return null;
+        }
+
+        if (mode == CorrectionMode.Auto
+            && !containsDigit
+            && !sourceDictionaryHit
+            && sourceHasUkrainianMorphologySignal
+            && !targetLexicalHit
+            && !targetConversationalHit
+            && !targetLooksLikeTechLatinWord
+            && !targetLooksLikeTechTextToken)
+        {
+            return null;
+        }
+
+        if (mode == CorrectionMode.Auto
             && targetConversationalHit
             && !sourceDictionaryHit
             && tokenLength >= 3
@@ -795,6 +874,7 @@ public static class CorrectionHeuristics
         if (mode == CorrectionMode.Auto
             && (targetLooksLikeTechLatinWord || allowShortTechLatinBypass)
             && !sourceDictionaryHit
+            && !sourceLooksPlausiblyUkrainian
             && sourceScore <= 0.34
             && (effectiveTargetScore >= 0.28 || isVowellessAcronym)
             && (confidence >= 0.20 || isVowellessAcronym)
@@ -1446,7 +1526,7 @@ public static class CorrectionHeuristics
 
     private static readonly HashSet<string> AutoShortEnAllowlist = new(StringComparer.Ordinal)
     {
-        "am", "is", "oh", "uh", "ok"
+        "am", "oh", "uh", "ok"
     };
 
     private static readonly HashSet<string> AutoSingleEnAllowlist = new(StringComparer.Ordinal)
@@ -1462,11 +1542,17 @@ public static class CorrectionHeuristics
         "tool", "tools", "driver", "update"
     };
 
+    private static readonly HashSet<string> ProtectedShortLatinTokens = new(StringComparer.Ordinal)
+    {
+        "wsl", "html", "json", "yaml", "xml", "css"
+    };
+
     private static readonly string[] UkrainianMorphologyEndings =
     [
         "ами", "ями", "ові", "еві", "ому", "ими", "іми",
         "ість", "ення", "ання", "увати", "ити", "ати", "яти",
-        "кою", "ці", "ку", "ки", "ка", "ів", "ям", "ах", "ях"
+        "кою", "ці", "ку", "ки", "ка", "ів", "ям", "ах", "ях",
+        "ну", "ші", "іш"
     ];
 
     private static bool IsAutoShortAllowlisted(string convertedLower, CorrectionDirection direction) =>
@@ -1478,6 +1564,10 @@ public static class CorrectionHeuristics
         direction == CorrectionDirection.EnToUa
             ? AutoSingleUaAllowlist.Contains(convertedLower)
             : AutoSingleEnAllowlist.Contains(convertedLower);
+
+    private static bool HasProtectedShortLatinToken(string lower) =>
+        !string.IsNullOrWhiteSpace(lower)
+        && ProtectedShortLatinTokens.Contains(lower);
 
     private static readonly HashSet<string> EnglishBoundaryTrigrams = new(StringComparer.Ordinal)
     {
@@ -1664,7 +1754,7 @@ public static class CorrectionHeuristics
         if (lower.Length <= 6)
             return englishScore >= 0.40 && zeroRatio <= 0.28;
 
-        return englishScore >= 0.34 && zeroRatio <= 0.22;
+        return englishScore >= 0.32 && zeroRatio <= 0.22;
     }
 
     private static bool HasEnglishDictionaryBaseForm(string lower)
@@ -1856,6 +1946,22 @@ public static class CorrectionHeuristics
         return lower.Length >= 4
             && vowelCount >= 1
             && lower.Any(c => c is 'p' or 'h' or 'x' or 'g' or 'k' or 'v');
+    }
+
+    private static bool LooksLikeTechnicalLatinWord(string lower)
+    {
+        if (string.IsNullOrWhiteSpace(lower) || !lower.All(char.IsLetter))
+            return false;
+
+        int vowelCount = lower.Count(c => EnVowels.Contains(c));
+        if (lower.Length <= 4 && vowelCount == 0)
+            return lower.Any(c => c is 'x' or 'z' or 'v' or 'k' or 't' or 'p' or 'g');
+
+        if (vowelCount == 0 || lower.Length < 4)
+            return false;
+
+        return HasTechnicalMarker(lower)
+            || (ScoreEnglish(lower) >= 0.34 && lower.Any(c => c is 'p' or 'h' or 'x' or 'g' or 'k' or 'v'));
     }
 
     private static bool LooksLikeTechnicalTextToken(string token)

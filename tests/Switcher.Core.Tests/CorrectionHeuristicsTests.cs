@@ -721,7 +721,6 @@ public class CorrectionHeuristicsTests
     }
 
     [Theory]
-    [InlineData("ші", "is")]
     [InlineData("щр", "oh")]
     [InlineData("фь", "am")]
     [InlineData("гр", "uh")]
@@ -732,6 +731,36 @@ public class CorrectionHeuristicsTests
         Assert.NotNull(result);
         Assert.Equal(CorrectionDirection.UaToEn, result!.Direction);
         Assert.Equal(expected, result.ConvertedText);
+    }
+
+    [Theory]
+    [InlineData("ltitdis", "дешевші")]
+    [InlineData("crjhsi", "скоріш")]
+    [InlineData("ufneyre", "гатунку")]
+    [InlineData("levre", "думку")]
+    [InlineData("pfgecre", "запуску")]
+    [InlineData("dhexye", "вручну")]
+    [InlineData("zrs", "які")]
+    public void Evaluate_LatinWordWithUkrainianMorphologyWithoutDictionaryHit_AutoMode_Converts(string word, string expected)
+    {
+        var result = Evaluate(word, CorrectionMode.Auto);
+        Assert.NotNull(result);
+        Assert.Equal(CorrectionDirection.EnToUa, result!.Direction);
+        Assert.Equal(expected, result.ConvertedText);
+    }
+
+    [Theory]
+    [InlineData("ші")]
+    [InlineData("сум")]
+    [InlineData("сумм")]
+    [InlineData("запуску")]
+    [InlineData("вручну")]
+    [InlineData("які")]
+    [InlineData("wsl")]
+    public void Evaluate_AlreadyCorrectWordOrProtectedToken_AutoMode_Skips(string word)
+    {
+        var result = Evaluate(word, CorrectionMode.Auto);
+        Assert.Null(result);
     }
 
     [Theory]

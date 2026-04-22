@@ -8,7 +8,8 @@ namespace Switcher.App;
 
 public partial class App : System.Windows.Application
 {
-    private const string SingleInstanceMutexName = @"Global\Switcher_EN_UA_SingleInstance";
+    // Per-user tray app: Local mutex avoids cross-session/global namespace edge cases on startup.
+    private const string SingleInstanceMutexName = @"Local\Switcher_EN_UA_SingleInstance";
 
     private NotifyIcon? _trayIcon;
     private SwitcherEngine? _engine;
@@ -20,26 +21,50 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
 
-        _singleInstanceMutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out bool createdNew);
-        if (!createdNew)
+        try
         {
+            _singleInstanceMutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out bool createdNew);
+            if (!createdNew)
+            {
+                System.Windows.MessageBox.Show(
+                    "EN-UA Switcher is already running in the system tray.",
+                    "EN-UA Switcher",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                Current.Shutdown();
+                return;
+            }
+            _ownsSingleInstanceMutex = true;
+
+            _engine = new SwitcherEngine();
+            _engine.Start();
+
+            BuildTrayIcon();
+
+            if (!_engine.Settings.Current.StartMinimized)
+                ShowMainWindow();
+        }
+        catch (Exception ex)
+        {
+            _engine?.Dispose();
+            _engine = null;
+            _trayIcon?.Dispose();
+            _trayIcon = null;
+
+            if (_ownsSingleInstanceMutex)
+                _singleInstanceMutex?.ReleaseMutex();
+
+            _singleInstanceMutex?.Dispose();
+            _singleInstanceMutex = null;
+            _ownsSingleInstanceMutex = false;
+
             System.Windows.MessageBox.Show(
-                "EN-UA Switcher is already running in the system tray.",
+                $"EN-UA Switcher could not start.\n\n{ex.Message}",
                 "EN-UA Switcher",
                 MessageBoxButton.OK,
-                MessageBoxImage.Information);
+                MessageBoxImage.Error);
             Current.Shutdown();
-            return;
         }
-        _ownsSingleInstanceMutex = true;
-
-        _engine = new SwitcherEngine();
-        _engine.Start();
-
-        BuildTrayIcon();
-
-        if (!_engine.Settings.Current.StartMinimized)
-            ShowMainWindow();
     }
 
     private void BuildTrayIcon()

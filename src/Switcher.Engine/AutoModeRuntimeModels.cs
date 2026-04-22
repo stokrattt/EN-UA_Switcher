@@ -45,6 +45,7 @@ internal sealed record BufferQualitySnapshot(
 internal sealed record WordSnapshot(
     DateTime CapturedAtUtc,
     ForegroundContext Context,
+    ITextTargetAdapter? ReadAdapter,
     string ProcessName,
     string ControlClass,
     string WindowClass,

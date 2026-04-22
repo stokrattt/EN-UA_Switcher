@@ -39,3 +39,7 @@ TestResults/
 publish/
 publish-full/
 artifacts/
+
+# Broken local artifact names that should never be committed
+{c*.ConvertedText
+{c*.ConvertedText*

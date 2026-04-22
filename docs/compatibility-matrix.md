@@ -1,7 +1,7 @@
 # Switcher — Compatibility Matrix
 
-**Version:** 1.0.0-dev  
-**Last updated:** 2026-04-09  
+**Version:** 2.2.0  
+**Last updated:** 2026-04-22  
 **Adapter priority:** NativeEditTargetAdapter → UIAutomationTargetAdapter
 
 ---
@@ -91,6 +91,8 @@
 5. **Strict mode**: When `StrictAutoMode=true` (default), `ConvertEnToUa`/`ConvertUaToEn` returns null for any character not in the layout map (digits, special symbols, accented Latin). Mixed-language text is never converted.
 
 6. **False positive protection**: Words in `en-common.txt` or `ua-common.txt` are never converted, even in Safe mode. The dictionaries use frequency data to prevent corrupting correctly-typed text.
+
+7. **Elevated targets**: The app itself runs `asInvoker` and does not require admin rights for normal startup or HKCU autorun registration. If a target app is already running elevated, Windows may require launching EN-UA Switcher elevated too before input injection or replacement can succeed there.
 
 ---
 

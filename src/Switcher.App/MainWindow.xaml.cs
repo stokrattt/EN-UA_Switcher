@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -244,7 +245,12 @@ public partial class MainWindow : Window
     {
         CmbRunningProcesses.IsDropDownOpen = true;
         if (FindDescendant<System.Windows.Controls.TextBox>(CmbRunningProcesses) is System.Windows.Controls.TextBox editableTextBox)
+        {
+            editableTextBox.Foreground = (System.Windows.Media.Brush)FindResource("ForegroundBrush");
+            editableTextBox.CaretBrush = (System.Windows.Media.Brush)FindResource("ForegroundBrush");
+            editableTextBox.Background = System.Windows.Media.Brushes.Transparent;
             editableTextBox.SelectAll();
+        }
     }
 
     private void CmbRunningProcesses_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -295,7 +301,15 @@ public partial class MainWindow : Window
     private void NestedScrollHost_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
         if (sender is System.Windows.Controls.ComboBox comboBox && comboBox.IsDropDownOpen)
+        {
+            if (TryScrollComboDropDown(comboBox, e.Delta))
+            {
+                e.Handled = true;
+                return;
+            }
+
             return;
+        }
 
         if (sender is System.Windows.Controls.ListBox listBox)
         {
@@ -315,6 +329,24 @@ public partial class MainWindow : Window
             Source = sender
         };
         parentScroll.RaiseEvent(relay);
+    }
+
+    private static bool TryScrollComboDropDown(System.Windows.Controls.ComboBox comboBox, int delta)
+    {
+        if (comboBox.Template.FindName("Popup", comboBox) is not Popup popup
+            || popup.Child is not DependencyObject child)
+        {
+            return false;
+        }
+
+        ScrollViewer? popupScroll = FindDescendant<ScrollViewer>(child);
+        if (popupScroll is null)
+            return false;
+
+        double nextOffset = popupScroll.VerticalOffset - (delta / 3.0);
+        nextOffset = Math.Max(0, Math.Min(popupScroll.ScrollableHeight, nextOffset));
+        popupScroll.ScrollToVerticalOffset(nextOffset);
+        return true;
     }
 
     private bool AddExclusionName(string rawName)

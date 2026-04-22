@@ -115,6 +115,7 @@ public class UiAutomationTargetAdapterRegressionTests
             cachedStart: 7,
             cachedEnd: 12,
             replacement: "hello",
+            currentCaretPos: 12,
             out string newValue,
             out int targetCaretIndex);
 
@@ -133,6 +134,7 @@ public class UiAutomationTargetAdapterRegressionTests
             cachedStart: 6,
             cachedEnd: 11,
             replacement: "hello",
+            currentCaretPos: "старе руддщ нове руддщ".Length,
             out string newValue,
             out int targetCaretIndex);
 
@@ -151,10 +153,51 @@ public class UiAutomationTargetAdapterRegressionTests
             cachedStart: 6,
             cachedEnd: 11,
             replacement: "hello",
+            currentCaretPos: "старе hit нове".Length,
             out _,
             out _);
 
         Assert.False(ok);
+    }
+
+    [Fact]
+    public void TryBuildReplacementValue_PreservesTrailingSpaceCaret_WhenDelimiterAlreadyExists()
+    {
+        bool ok = InvokeTryBuildReplacementValue(
+            currentValue: "привіт руддщ ",
+            cachedValue: "привіт руддщ",
+            original: "руддщ",
+            cachedStart: 7,
+            cachedEnd: 12,
+            replacement: "hello",
+            currentCaretPos: "привіт руддщ ".Length,
+            out string newValue,
+            out int targetCaretIndex);
+
+        Assert.True(ok);
+        Assert.Equal("привіт hello ", newValue);
+        Assert.Equal("привіт hello ".Length, targetCaretIndex);
+    }
+
+    [Fact]
+    public void TryBuildReplacementValue_PreservesTypedTailAfterSuppressedBoundary()
+    {
+        const string currentValue = "hello руддщ world";
+
+        bool ok = InvokeTryBuildReplacementValue(
+            currentValue: currentValue,
+            cachedValue: "hello руддщ",
+            original: "руддщ",
+            cachedStart: 6,
+            cachedEnd: 11,
+            replacement: "hello",
+            currentCaretPos: currentValue.Length,
+            out string newValue,
+            out int targetCaretIndex);
+
+        Assert.True(ok);
+        Assert.Equal("hello hello world", newValue);
+        Assert.Equal("hello hello world".Length, targetCaretIndex);
     }
 
     [Theory]
@@ -222,6 +265,7 @@ public class UiAutomationTargetAdapterRegressionTests
         int cachedStart,
         int cachedEnd,
         string replacement,
+        int currentCaretPos,
         out string newValue,
         out int targetCaretIndex)
     {
@@ -236,13 +280,14 @@ public class UiAutomationTargetAdapterRegressionTests
             cachedStart,
             cachedEnd,
             replacement,
+            currentCaretPos,
             null,
             null
         };
 
         bool ok = (bool)method.Invoke(null, args)!;
-        newValue = (string?)args[6] ?? string.Empty;
-        targetCaretIndex = (int?)args[7] ?? -1;
+        newValue = (string?)args[7] ?? string.Empty;
+        targetCaretIndex = (int?)args[8] ?? -1;
         return ok;
     }
 
@@ -794,6 +839,7 @@ public class AutoModeHandlerRegressionTests
             [
                 DateTime.UtcNow,
                 context,
+                null,
                 processName,
                 controlClass,
                 windowClass,

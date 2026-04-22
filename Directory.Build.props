@@ -1,0 +1,15 @@
+<Project>
+  <PropertyGroup>
+    <SwitcherVersion>2.2.0</SwitcherVersion>
+    <SwitcherAssemblyVersion>2.2.0.0</SwitcherAssemblyVersion>
+
+    <Version Condition="'$(Version)' == ''">$(SwitcherVersion)</Version>
+    <AssemblyVersion Condition="'$(AssemblyVersion)' == ''">$(SwitcherAssemblyVersion)</AssemblyVersion>
+    <FileVersion Condition="'$(FileVersion)' == ''">$(SwitcherAssemblyVersion)</FileVersion>
+    <InformationalVersion Condition="'$(InformationalVersion)' == ''">$(SwitcherVersion)</InformationalVersion>
+
+    <!-- Keep About/version text stable and human-readable instead of appending git hashes. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+</Project>

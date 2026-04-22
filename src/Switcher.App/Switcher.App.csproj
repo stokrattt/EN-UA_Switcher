@@ -11,11 +11,8 @@
     <AssemblyName>EN-UA-Switcher</AssemblyName>
     <AssemblyTitle>EN-UA Switcher</AssemblyTitle>
     <Product>EN-UA Switcher</Product>
-    <Version>2.1.0</Version>
-    <AssemblyVersion>2.1.0.0</AssemblyVersion>
-    <FileVersion>2.1.0.0</FileVersion>
-    <InformationalVersion>2.1.0</InformationalVersion>
     <ApplicationIcon>Assets\Switcher.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <OutputPath>..\..\bin\</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
   </PropertyGroup>

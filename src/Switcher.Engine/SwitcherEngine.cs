@@ -51,6 +51,10 @@ public class SwitcherEngine : IDisposable
         if (_started) return;
         _started = true;
 
+        // Refresh the HKCU autorun entry on every successful launch so upgrades
+        // keep pointing at the current executable instead of an older build path.
+        StartupHelper.SetStartup(Settings.Current.RunAtStartup);
+
         // Wire keyboard observer → auto mode
         _keyboardObserver.WordBoundaryDetected += OnWordBoundary;
         _keyboardObserver.BufferReset += OnBufferReset;

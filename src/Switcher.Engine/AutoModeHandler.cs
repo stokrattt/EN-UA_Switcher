@@ -141,7 +141,9 @@ public class AutoModeHandler
         if (!TryBeginAutoOperation(snapshot, plan))
             return;
 
-        _observer.SuppressCurrentDelimiter();
+        if (ShouldSuppressDelimiter(plan))
+            _observer.SuppressCurrentDelimiter();
+
         _ = Task.Run(() => ExecuteReplacementPlan(plan));
     }
 
@@ -245,6 +247,7 @@ public class AutoModeHandler
         return new WordSnapshot(
             DateTime.UtcNow,
             context,
+            adapter,
             context.ProcessName,
             context.FocusedControlClass,
             context.WindowClass,
@@ -537,28 +540,37 @@ public class AutoModeHandler
         try
         {
             var snapshot = plan.Snapshot;
+            bool useCachedExactSlice = CanUseCachedBrowserValuePatternReplace(plan);
             await Task.Delay(BrowserValuePatternStartDelayMs);
-            if (_observer.UserKeyDownCounter != startCount)
+            if (!useCachedExactSlice && _observer.UserKeyDownCounter != startCount)
             {
                 LogSkip(snapshot, plan.AdapterName, "Browser ValuePattern aborted: user kept typing before async replace started");
                 return;
             }
 
-            if (TryAbortPreconditions(snapshot, string.Empty, "Browser ValuePattern", out string abortReason))
+            if (TryAbortPreconditions(
+                    snapshot,
+                    string.Empty,
+                    "Browser ValuePattern",
+                    out string abortReason,
+                    allowPostDelimiterInteraction: useCachedExactSlice))
             {
                 LogSkip(snapshot, plan.AdapterName, $"Browser ValuePattern aborted: {abortReason}");
                 return;
             }
 
-            var adapter = new UIAutomationTargetAdapter();
+            var adapter = snapshot.ReadAdapter as UIAutomationTargetAdapter ?? new UIAutomationTargetAdapter();
             if (adapter.CanHandle(snapshot.Context) != TargetSupport.Full)
             {
                 LogSkip(snapshot, plan.AdapterName, "Browser ValuePattern aborted: ValuePattern is unavailable");
                 return;
             }
 
-            string? actualWord = adapter.TryGetLastWord(snapshot.Context);
-            if (_observer.UserKeyDownCounter != startCount)
+            string? actualWord = useCachedExactSlice
+                ? snapshot.LiveWord
+                : adapter.TryGetLastWord(snapshot.Context);
+
+            if (!useCachedExactSlice && _observer.UserKeyDownCounter != startCount)
             {
                 LogSkip(snapshot, plan.AdapterName, "Browser ValuePattern aborted: user kept typing after live word read");
                 return;
@@ -953,8 +965,16 @@ public class AutoModeHandler
     }
 
     private bool TryAbortPreconditions(WordSnapshot snapshot, string expectedOriginal, string stage, out string reason)
+        => TryAbortPreconditions(snapshot, expectedOriginal, stage, out reason, allowPostDelimiterInteraction: false);
+
+    private bool TryAbortPreconditions(
+        WordSnapshot snapshot,
+        string expectedOriginal,
+        string stage,
+        out string reason,
+        bool allowPostDelimiterInteraction)
     {
-        if (_observer.HasInteractionSinceLastDelimiter)
+        if (!allowPostDelimiterInteraction && _observer.HasInteractionSinceLastDelimiter)
         {
             reason = $"{stage}: post-delimiter interaction happened before async replace executes";
             return true;
@@ -998,11 +1018,31 @@ public class AutoModeHandler
 
     private void TryReinjectDelimiter(ReplacementPlan plan)
     {
-        // Unconditionally reinject space to prevent losing it completely.
-        // Even if there's interaction (fast typing), a slightly out-of-order space
-        // is much better than merging two words permanently.
+        if (!ShouldSuppressDelimiter(plan))
+            return;
+
+        ForegroundContext? current = _contextProvider.GetCurrent();
+        if (current is null
+            || current.ProcessId != plan.Snapshot.Context.ProcessId
+            || current.Hwnd != plan.Snapshot.Context.Hwnd
+            || current.FocusedControlHwnd != plan.Snapshot.Context.FocusedControlHwnd)
+        {
+            return;
+        }
+
         ReinjectDelimiter(plan.Snapshot.DelimiterVk);
     }
+
+    private static bool CanUseCachedBrowserValuePatternReplace(ReplacementPlan plan) =>
+        plan.ExecutionPath == ReplacementExecutionPath.BrowserValuePattern
+        && plan.Decision.Candidate is not null
+        && !plan.Decision.RequiresLiveRuntimeRead
+        && plan.Snapshot.ReadAdapter is UIAutomationTargetAdapter
+        && !string.IsNullOrWhiteSpace(plan.Snapshot.LiveWord);
+
+    private static bool ShouldSuppressDelimiter(ReplacementPlan plan) =>
+        !(plan.ExecutionPath == ReplacementExecutionPath.BrowserValuePattern
+          && plan.Snapshot.DelimiterVk == NativeMethods.VK_SPACE);
 
     private static CorrectionCandidate? TryEvaluateCandidate(string text, string visibleTrailingSuffix)
     {

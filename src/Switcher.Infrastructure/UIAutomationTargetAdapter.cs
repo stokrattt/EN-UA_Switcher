@@ -172,6 +172,7 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
 
             string? currentValue = valuePattern.Current.Value;
             if (currentValue == null) return false;
+            int currentCaretPos = TryGetCaretPosition() ?? currentValue.Length;
 
             if (!TryBuildReplacementValue(
                     currentValue,
@@ -180,6 +181,7 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
                     _lastWordStart,
                     _lastWordEnd,
                     replacement,
+                    currentCaretPos,
                     out string newValue,
                     out int targetCaretIndex))
                 return false;
@@ -319,6 +321,7 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
         int cachedStart,
         int cachedEnd,
         string replacement,
+        int currentCaretPos,
         out string newValue,
         out int targetCaretIndex)
     {
@@ -358,12 +361,10 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
             return false;
 
         newValue = currentValue[..start] + replacement + currentValue[end..];
-        
-        // Ensure caret remains at exactly the end of the replaced word,
-        // so if the user typed text AFTER the word rapidly, the caret doesn't mysteriously jump back.
-        int caretGrowth = replacement.Length - (end - start);
-        // Estimate original caret was at 'end', so new position is 'end' + caretGrowth.
-        targetCaretIndex = end + caretGrowth;
+
+        int newEnd = start + replacement.Length;
+        int tailOffset = Math.Max(0, Math.Min(currentValue.Length, currentCaretPos) - end);
+        targetCaretIndex = Math.Min(newValue.Length, newEnd + tailOffset);
         return true;
     }
 

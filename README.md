@@ -125,6 +125,13 @@ Settings are stored in:
 
 - `%APPDATA%\Switcher\settings.json`
 
+## Startup And Admin Notes
+
+- `Run at Windows startup` uses the current-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` key, so normal registration does not require admin rights
+- The app now refreshes that startup entry on launch, which helps upgrades keep pointing at the current executable instead of an older release folder
+- Normal startup is `asInvoker` and should not trigger a UAC prompt
+- If you need to correct text inside an already elevated target app, Windows may require running EN-UA Switcher elevated too, because low-integrity processes cannot inject into higher-integrity windows
+
 ## Supported Targets
 
 | Target | Status |
@@ -149,9 +156,9 @@ Portable release artifacts are published on the GitHub releases page:
 
 Release notes:
 
-- `bin\Switcher.App.exe` is only the normal build output for local development
+- `bin\EN-UA-Switcher.exe` is only the normal build output for local development
 - `EN-UA-Switcher.exe` is the full self-contained Windows build and does not require a separate .NET install
-- `EN-UA-Switcher-small.exe` is the smaller runtime-dependent build and requires the .NET 8 Desktop Runtime
+- `EN-UA-Switcher-runtime-dependent.exe` is the smaller runtime-dependent build and requires the .NET 8 Desktop Runtime
 
 ## Build From Source
 
@@ -199,7 +206,7 @@ This repo is configured to place the app build output into the repository-level 
 
 After a normal build, the main executable is typically here:
 
-- `bin\Switcher.App.exe`
+- `bin\EN-UA-Switcher.exe`
 
 Other build outputs such as `.dll`, `.pdb`, and runtime config files are placed in the same folder.
 
@@ -208,8 +215,9 @@ This file is not the packaged end-user release by itself.
 To create the actual release artifact, run the publish script above. It creates:
 
 - `artifacts\release\EN-UA-Switcher.exe`
-- `artifacts\release\EN-UA-Switcher-small.exe`
+- `artifacts\release\EN-UA-Switcher-runtime-dependent.exe`
 - `artifacts\release\SHA256SUMS.txt`
+- `artifacts\release\release-manifest.txt`
 
 The GitHub Actions release workflow uses the same script when you push a `v*` tag.
 

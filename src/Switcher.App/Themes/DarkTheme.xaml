@@ -470,6 +470,7 @@
                                          Background="Transparent"
                                          BorderThickness="0"
                                          Foreground="{StaticResource ForegroundBrush}"
+                                         TextElement.Foreground="{StaticResource ForegroundBrush}"
                                          CaretBrush="{StaticResource ForegroundBrush}"
                                          SelectionBrush="#FF6E95FF"
                                          SelectionOpacity="0.85"
@@ -527,7 +528,10 @@
                                     BorderBrush="{StaticResource BorderBrush}"
                                     BorderThickness="1"
                                     CornerRadius="10">
-                                <ScrollViewer CanContentScroll="True">
+                                <ScrollViewer CanContentScroll="True"
+                                              VerticalScrollBarVisibility="Auto"
+                                              HorizontalScrollBarVisibility="Disabled"
+                                              PanningMode="VerticalOnly">
                                     <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" />
                                 </ScrollViewer>
                             </Border>

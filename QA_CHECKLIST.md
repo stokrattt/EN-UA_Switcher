@@ -1,6 +1,6 @@
 # EN-UA Switcher QA Checklist
 
-Last updated: 2026-04-16
+Last updated: 2026-04-22
 
 Status legend:
 - `PASS (auto)` = confirmed by automated tests in this repo
@@ -13,8 +13,9 @@ Status legend:
 | Area | Case | Method | Status | Notes |
 | --- | --- | --- | --- | --- |
 | Build | `Switcher.App` builds | `dotnet build .\src\Switcher.App\Switcher.App.csproj -v minimal` | PASS (auto) | Current branch builds cleanly |
-| Build | `Switcher.Engine.Tests` pass | `dotnet test .\tests\Switcher.Engine.Tests\Switcher.Engine.Tests.csproj -v minimal` | PASS (auto) | `71/71` |
-| Build | `Switcher.Core.Tests` pass | `dotnet test .\tests\Switcher.Core.Tests\Switcher.Core.Tests.csproj -v minimal` | PASS (auto) | `224/224` |
+| Build | `Switcher.Engine.Tests` pass | `dotnet test .\tests\Switcher.Engine.Tests\Switcher.Engine.Tests.csproj -v minimal` | PASS (auto) | `73/73` |
+| Build | `Switcher.Core.Tests` pass | `dotnet test .\tests\Switcher.Core.Tests\Switcher.Core.Tests.csproj -v minimal` | PASS (auto) | `1824/1824` |
+| Release | Publish script creates verified release assets | `.\scripts\publish-release.ps1` | PASS (auto) | Produces self-contained + runtime-dependent EXEs, checks SHA256 and ProductVersion |
 | App startup | Settings window opens | Local UI smoke | PASS (live) | Window detected via UIAutomation |
 | Single instance | Second app instance does not conflict with hotkeys | Regression tests + real second-launch message | PASS (auto) / MANUAL | Hotkey manager side is covered; second-launch UX should still be rechecked manually |
 
@@ -138,6 +139,7 @@ These are the cases a terminal-driven pass still cannot honestly certify without
 4. Tray menu interaction flow end-to-end
 5. Undo runtime in a real target control after an actual auto-correction
 6. Diagnostics window UX and live log visibility
+7. Elevated target-app pass: verify whether EN-UA Switcher must be started elevated to modify already-elevated windows
 
 ## Suggested next manual smoke sequence
 

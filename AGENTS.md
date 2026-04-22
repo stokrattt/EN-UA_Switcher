@@ -234,6 +234,19 @@ All 4 cherry-picks from PR #1 are now implemented and tested.
 - Root cause: `PART_EditableTextBox` used `{TemplateBinding Foreground}` which can fail to resolve on Win11, and inner `ScrollViewer` had no explicit transparent background.
 - Fix: Changed to `Foreground="{StaticResource ForegroundBrush}"` + added `Background="Transparent"` to ScrollViewer in [src/Switcher.App/Themes/DarkTheme.xaml](src/Switcher.App/Themes/DarkTheme.xaml).
 
+## Release / Deployment Notes (2026-04-22)
+
+- GitHub Windows release runs can fail hard if invalid-path junk files such as `{c?.ConvertedText` are tracked.
+  Keep them deleted and ignored.
+- Canonical release assets are now:
+  - `EN-UA-Switcher.exe` — self-contained
+  - `EN-UA-Switcher-runtime-dependent.exe` — requires .NET 8 Desktop Runtime
+- Release flow source of truth:
+  - version defaults from `Directory.Build.props`
+  - packaging from `scripts/publish-release.ps1`
+  - upload from `.github/workflows/release.yml`
+- `StartupHelper.SetStartup(...)` is refreshed on engine startup so upgrades rewrite HKCU autorun to the current exe path.
+
 ## Maintenance Note
 
 - Keep this file short.

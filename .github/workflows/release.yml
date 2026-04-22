@@ -31,7 +31,7 @@ jobs:
         with:
           files: |
             artifacts/release/EN-UA-Switcher.exe
-            artifacts/release/EN-UA-Switcher-small.exe
+            artifacts/release/EN-UA-Switcher-runtime-dependent.exe
             artifacts/release/SHA256SUMS.txt
             artifacts/release/release-manifest.txt
           generate_release_notes: true

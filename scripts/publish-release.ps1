@@ -10,6 +10,7 @@ $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
 $projectPath = Join-Path $repoRoot "src\Switcher.App\Switcher.App.csproj"
+$directoryBuildPropsPath = Join-Path $repoRoot "Directory.Build.props"
 
 if (-not (Test-Path $projectPath)) {
     throw "Could not find project file at '$projectPath'."
@@ -17,6 +18,11 @@ if (-not (Test-Path $projectPath)) {
 
 [xml]$projectXml = Get-Content $projectPath
 $projectVersion = $projectXml.Project.PropertyGroup.Version | Select-Object -First 1
+
+if ([string]::IsNullOrWhiteSpace($projectVersion) -and (Test-Path $directoryBuildPropsPath)) {
+    [xml]$directoryBuildPropsXml = Get-Content $directoryBuildPropsPath
+    $projectVersion = $directoryBuildPropsXml.Project.PropertyGroup.SwitcherVersion | Select-Object -First 1
+}
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
     $resolvedVersion = $projectVersion
@@ -150,6 +156,21 @@ if (-not (Test-Path $smallPublishedExe)) {
 Copy-Item -LiteralPath $fullPublishedExe -Destination $fullReleaseExe
 Copy-Item -LiteralPath $smallPublishedExe -Destination $smallReleaseExe
 
+$fullFileVersionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($fullReleaseExe)
+$smallFileVersionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($smallReleaseExe)
+$fullProductVersionMatches = -not [string]::IsNullOrWhiteSpace($fullFileVersionInfo.ProductVersion) `
+    -and $fullFileVersionInfo.ProductVersion.StartsWith($resolvedVersion, [System.StringComparison]::Ordinal)
+$smallProductVersionMatches = -not [string]::IsNullOrWhiteSpace($smallFileVersionInfo.ProductVersion) `
+    -and $smallFileVersionInfo.ProductVersion.StartsWith($resolvedVersion, [System.StringComparison]::Ordinal)
+
+if (-not $fullProductVersionMatches) {
+    throw "Published self-contained executable reports ProductVersion '$($fullFileVersionInfo.ProductVersion)', expected '$resolvedVersion'."
+}
+
+if (-not $smallProductVersionMatches) {
+    throw "Published runtime-dependent executable reports ProductVersion '$($smallFileVersionInfo.ProductVersion)', expected '$resolvedVersion'."
+}
+
 $fullHash = (Get-FileHash -LiteralPath $fullReleaseExe -Algorithm SHA256).Hash.ToLowerInvariant()
 $smallHash = (Get-FileHash -LiteralPath $smallReleaseExe -Algorithm SHA256).Hash.ToLowerInvariant()
 
@@ -160,7 +181,11 @@ $smallHash = (Get-FileHash -LiteralPath $smallReleaseExe -Algorithm SHA256).Hash
 
 @(
     "Version: $resolvedVersion"
+    "AssemblyVersion: $assemblyVersion"
     "Runtime: $Runtime"
+    ""
+    "$mainAssetName ProductVersion: $($fullFileVersionInfo.ProductVersion)"
+    "$runtimeDependentAssetName ProductVersion: $($smallFileVersionInfo.ProductVersion)"
     ""
     "$mainAssetName - main self-contained Windows build, no .NET install required"
     "$runtimeDependentAssetName - smaller runtime-dependent build, requires .NET 8 Desktop Runtime"
