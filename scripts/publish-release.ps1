@@ -120,13 +120,14 @@ $smallPublishArgs = @(
     $projectPath,
     "-c", $Configuration,
     "-r", $Runtime,
-    "--self-contained", "false",
+    "--no-self-contained",
     "--ignore-failed-sources",
     "--no-restore",
     "/p:Version=$resolvedVersion",
     "/p:InformationalVersion=$resolvedVersion",
     "/p:AssemblyVersion=$assemblyVersion",
     "/p:FileVersion=$assemblyVersion",
+    "/p:SelfContained=false",
     "/p:PublishSingleFile=true",
     "/p:DebugType=None",
     "/p:DebugSymbols=false",
@@ -173,6 +174,17 @@ if (-not $smallProductVersionMatches) {
 
 $fullHash = (Get-FileHash -LiteralPath $fullReleaseExe -Algorithm SHA256).Hash.ToLowerInvariant()
 $smallHash = (Get-FileHash -LiteralPath $smallReleaseExe -Algorithm SHA256).Hash.ToLowerInvariant()
+$fullSizeBytes = (Get-Item -LiteralPath $fullReleaseExe).Length
+$smallSizeBytes = (Get-Item -LiteralPath $smallReleaseExe).Length
+$maxExpectedRuntimeDependentSizeBytes = 10MB
+
+if ($smallSizeBytes -ge $fullSizeBytes) {
+    throw "Runtime-dependent executable size ($smallSizeBytes bytes) is not smaller than the self-contained build ($fullSizeBytes bytes)."
+}
+
+if ($smallSizeBytes -gt $maxExpectedRuntimeDependentSizeBytes) {
+    throw "Runtime-dependent executable size ($smallSizeBytes bytes) exceeds the expected single-file threshold of $maxExpectedRuntimeDependentSizeBytes bytes."
+}
 
 @(
     "$fullHash *$mainAssetName"
@@ -191,8 +203,8 @@ $smallHash = (Get-FileHash -LiteralPath $smallReleaseExe -Algorithm SHA256).Hash
     "$runtimeDependentAssetName - smaller runtime-dependent build, requires .NET 8 Desktop Runtime"
 ) | Set-Content -LiteralPath $manifestFile -Encoding ascii
 
-$fullSizeMb = [Math]::Round((Get-Item -LiteralPath $fullReleaseExe).Length / 1MB, 2)
-$smallSizeKb = [Math]::Round((Get-Item -LiteralPath $smallReleaseExe).Length / 1KB, 0)
+$fullSizeMb = [Math]::Round($fullSizeBytes / 1MB, 2)
+$smallSizeKb = [Math]::Round($smallSizeBytes / 1KB, 0)
 
 Write-Host ""
 Write-Host "Release artifacts created:"

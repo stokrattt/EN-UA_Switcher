@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup>
-    <SwitcherVersion>2.2.0</SwitcherVersion>
-    <SwitcherAssemblyVersion>2.2.0.0</SwitcherAssemblyVersion>
+    <SwitcherVersion>2.2.1</SwitcherVersion>
+    <SwitcherAssemblyVersion>2.2.1.0</SwitcherAssemblyVersion>
 
     <Version Condition="'$(Version)' == ''">$(SwitcherVersion)</Version>
     <AssemblyVersion Condition="'$(AssemblyVersion)' == ''">$(SwitcherAssemblyVersion)</AssemblyVersion>

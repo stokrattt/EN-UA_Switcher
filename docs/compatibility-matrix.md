@@ -1,6 +1,6 @@
 # Switcher — Compatibility Matrix
 
-**Version:** 2.2.0  
+**Version:** 2.2.1  
 **Last updated:** 2026-04-22  
 **Adapter priority:** NativeEditTargetAdapter → UIAutomationTargetAdapter
 
