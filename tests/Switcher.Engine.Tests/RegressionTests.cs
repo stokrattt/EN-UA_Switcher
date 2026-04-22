@@ -888,6 +888,64 @@ public class AutoModeHandlerRegressionTests
         Assert.Contains("native live read unavailable", resolved.Reason);
     }
 
+    [Theory]
+    [InlineData("element")]
+    [InlineData("element-desktop")]
+    public void ShouldUseElectronUiaPath_DefaultsToTrueForElement(string processName)
+    {
+        var settings = new SettingsManager
+        {
+            Current =
+            {
+                ElectronUiaPathEnabled = false
+            }
+        };
+
+        var handler = new AutoModeHandler(
+            new ForegroundContextProvider(),
+            new TextTargetCoordinator(Array.Empty<ITextTargetAdapter>()),
+            new ExclusionManager(settings),
+            new DiagnosticsLogger(),
+            settings,
+            new KeyboardObserver(settings));
+
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("ShouldUseElectronUiaPath", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        bool shouldUse = (bool)method.Invoke(handler, [processName])!;
+
+        Assert.True(shouldUse);
+    }
+
+    [Theory]
+    [InlineData("slack")]
+    [InlineData("discord")]
+    public void ShouldUseElectronUiaPath_RemainsOptInForOtherElectronApps(string processName)
+    {
+        var settings = new SettingsManager
+        {
+            Current =
+            {
+                ElectronUiaPathEnabled = false
+            }
+        };
+
+        var handler = new AutoModeHandler(
+            new ForegroundContextProvider(),
+            new TextTargetCoordinator(Array.Empty<ITextTargetAdapter>()),
+            new ExclusionManager(settings),
+            new DiagnosticsLogger(),
+            settings,
+            new KeyboardObserver(settings));
+
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("ShouldUseElectronUiaPath", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        bool shouldUse = (bool)method.Invoke(handler, [processName])!;
+
+        Assert.False(shouldUse);
+    }
+
     [Fact]
     public void BuildUndoInputs_ReleasesModifiers_BackspacesReplacementAndRetypesOriginal()
     {

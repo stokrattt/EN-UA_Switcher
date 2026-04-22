@@ -17,6 +17,12 @@ public class AutoModeHandler
         "codex", "element", "slack", "discord", "teams"
     };
 
+    private static readonly HashSet<string> DefaultElectronUiaProcesses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "element",
+        "element-desktop"
+    };
+
     private static readonly HashSet<string> BrowserLikeWindowClasses = new(StringComparer.OrdinalIgnoreCase)
     {
         "Chrome_WidgetWin_1", "MozillaWindowClass", "Chrome_RenderWidgetHostHWND",
@@ -431,8 +437,7 @@ public class AutoModeHandler
 
         // Electron-specific path: UIA read + Backspace+Unicode replace (no Shift+Left selection, no race).
         // Gated behind a user opt-in setting so it can be tested without affecting default behaviour.
-        if (_settings.Current.ElectronUiaPathEnabled
-            && ElectronProcessCatalog.IsElectronProcess(snapshot.Context.ProcessName))
+        if (ShouldUseElectronUiaPath(snapshot.Context.ProcessName))
         {
             return new ReplacementPlan(
                 snapshot,
@@ -1207,9 +1212,15 @@ public class AutoModeHandler
 
     private bool IsBrowserLikeContext(ForegroundContext context) =>
         BrowserProcesses.Contains(context.ProcessName)
-        || (_settings.Current.ElectronUiaPathEnabled && ElectronProcessCatalog.IsElectronProcess(context.ProcessName))
+        || ShouldUseElectronUiaPath(context.ProcessName)
         || BrowserLikeWindowClasses.Contains(context.FocusedControlClass)
         || BrowserLikeWindowClasses.Contains(context.WindowClass);
+
+    private bool ShouldUseElectronUiaPath(string? processName) =>
+        !string.IsNullOrWhiteSpace(processName)
+        && ElectronProcessCatalog.IsElectronProcess(processName)
+        && (_settings.Current.ElectronUiaPathEnabled
+            || DefaultElectronUiaProcesses.Contains(processName));
 
     private static ReplacementSafetyProfile ClassifyReplacementSafetyProfile(
         bool isBrowserLikeContext,
