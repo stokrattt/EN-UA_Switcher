@@ -1122,6 +1122,45 @@ public class AutoModeHandlerRegressionTests
     }
 
     [Fact]
+    public void ResolveOriginalDisplay_PrefersLiveWord_WhenAvailable()
+    {
+        string original = InvokeResolveOriginalDisplay(
+            liveWord: "привіт",
+            visibleWord: "ghbdsn",
+            wordEn: "ghbdsn",
+            wordUa: "привіт",
+            layoutTag: "UA");
+
+        Assert.Equal("привіт", original);
+    }
+
+    [Fact]
+    public void ResolveOriginalDisplay_PrefersCurrentLayoutWord_OverVisibleWord()
+    {
+        string original = InvokeResolveOriginalDisplay(
+            liveWord: string.Empty,
+            visibleWord: "sdfghj",
+            wordEn: "ghbdsn",
+            wordUa: "привіт",
+            layoutTag: "EN");
+
+        Assert.Equal("ghbdsn", original);
+    }
+
+    [Fact]
+    public void ResolveOriginalDisplay_FallsBackToVisibleWord_WhenLayoutWordIsMissing()
+    {
+        string original = InvokeResolveOriginalDisplay(
+            liveWord: string.Empty,
+            visibleWord: "actual-visible",
+            wordEn: string.Empty,
+            wordUa: "привіт",
+            layoutTag: "EN");
+
+        Assert.Equal("actual-visible", original);
+    }
+
+    [Fact]
     public void ClassifyReplacementSafetyProfile_UnsafeBrowserEditorSurface_SkipsAutoMode()
     {
         MethodInfo method = typeof(AutoModeHandler)
@@ -1173,6 +1212,19 @@ public class AutoModeHandlerRegressionTests
             .GetMethod("BuildAddressBarRoute", BindingFlags.NonPublic | BindingFlags.Static)!;
 
         return method.Invoke(null, [decision, hasWritableValuePattern])!;
+    }
+
+    private static string InvokeResolveOriginalDisplay(
+        string liveWord,
+        string visibleWord,
+        string wordEn,
+        string wordUa,
+        string layoutTag)
+    {
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("ResolveOriginalDisplay", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        return (string)method.Invoke(null, [liveWord, visibleWord, wordEn, wordUa, layoutTag])!;
     }
 
     private static bool InvokeCanUseElectronBufferedFallback(CandidateDecision decision)

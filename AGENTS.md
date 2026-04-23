@@ -113,6 +113,7 @@ Read this first before doing a full repo walk.
   - real UIAutomation behavior
   - real `SendInput` against focused windows
   - timing/race conditions around hotkeys and reinjected input
+- Use `docs/manual-regression-checklist.md` after engine/input-routing changes and before release publishing.
 
 ## .NET 10 Upgrade Assessment Snapshot
 
@@ -170,8 +171,9 @@ dotnet list tests\Switcher.Core.Tests\Switcher.Core.Tests.csproj package --outda
 
 1. Read this file.
 2. Read `docs/chat-summary.md` for historical context.
-3. Read `docs/full-summary.md` for architecture detail if needed.
-4. Only then walk code, starting from:
+3. Read `docs/manual-regression-checklist.md` before validating runtime-sensitive fixes.
+4. Read `docs/full-summary.md` for architecture detail if needed.
+5. Only then walk code, starting from:
    `App.xaml.cs` -> `SwitcherEngine` -> `KeyboardObserver` -> adapters.
 
 ## PR #1 Implementation (2026-04-18 → continued)

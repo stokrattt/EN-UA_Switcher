@@ -263,15 +263,7 @@ public class AutoModeHandler
         string analysisVkEN = StripVisibleSuffixFromInterpretation(vkEN, visibleTrailingSuffix);
         string analysisVkUA = StripVisibleSuffixFromInterpretation(vkUA, visibleTrailingSuffix);
 
-        string preferredLayoutWord = layoutTag == "UA" ? wordUA : wordEN;
-        string fallbackLayoutWord = layoutTag == "UA" ? wordEN : wordUA;
-        string originalDisplay = !string.IsNullOrWhiteSpace(liveWord)
-            ? liveWord
-            : !string.IsNullOrWhiteSpace(preferredLayoutWord)
-            ? preferredLayoutWord
-            : !string.IsNullOrWhiteSpace(visibleWord)
-            ? visibleWord
-            : fallbackLayoutWord;
+        string originalDisplay = ResolveOriginalDisplay(liveWord, visibleWord, wordEN, wordUA, layoutTag);
         string techDetail = $"keys={approxWordLength} rec={recCount} drop={droppedKeys} seq={seqScans} lay={layoutTag}"
                             + (vkEN != wordEN ? $" vkEn={vkEN}" : "")
                             + (vkUA != wordUA ? $" vkUa={vkUA}" : "");
@@ -1125,6 +1117,27 @@ public class AutoModeHandler
         && !plan.Decision.RequiresLiveRuntimeRead
         && plan.Snapshot.ReadAdapter is UIAutomationTargetAdapter
         && !string.IsNullOrWhiteSpace(plan.Snapshot.LiveWord);
+
+    private static string ResolveOriginalDisplay(
+        string liveWord,
+        string visibleWord,
+        string wordEN,
+        string wordUA,
+        string layoutTag)
+    {
+        if (!string.IsNullOrWhiteSpace(liveWord))
+            return liveWord;
+
+        bool useUkrainianLayout = layoutTag.Equals("UA", StringComparison.OrdinalIgnoreCase);
+        string preferredLayoutWord = useUkrainianLayout ? wordUA : wordEN;
+        if (!string.IsNullOrWhiteSpace(preferredLayoutWord))
+            return preferredLayoutWord;
+
+        if (!string.IsNullOrWhiteSpace(visibleWord))
+            return visibleWord;
+
+        return useUkrainianLayout ? wordEN : wordUA;
+    }
 
     private static bool IsAddressBarBrowserValuePatternPlan(ReplacementPlan plan) =>
         plan.ExecutionPath == ReplacementExecutionPath.BrowserValuePattern
