@@ -263,11 +263,15 @@ public class AutoModeHandler
         string analysisVkEN = StripVisibleSuffixFromInterpretation(vkEN, visibleTrailingSuffix);
         string analysisVkUA = StripVisibleSuffixFromInterpretation(vkUA, visibleTrailingSuffix);
 
+        string preferredLayoutWord = layoutTag == "UA" ? wordUA : wordEN;
+        string fallbackLayoutWord = layoutTag == "UA" ? wordEN : wordUA;
         string originalDisplay = !string.IsNullOrWhiteSpace(liveWord)
             ? liveWord
+            : !string.IsNullOrWhiteSpace(preferredLayoutWord)
+            ? preferredLayoutWord
             : !string.IsNullOrWhiteSpace(visibleWord)
             ? visibleWord
-            : $"{wordEN} | {wordUA}";
+            : fallbackLayoutWord;
         string techDetail = $"keys={approxWordLength} rec={recCount} drop={droppedKeys} seq={seqScans} lay={layoutTag}"
                             + (vkEN != wordEN ? $" vkEn={vkEN}" : "")
                             + (vkUA != wordUA ? $" vkUa={vkUA}" : "");
@@ -473,24 +477,8 @@ public class AutoModeHandler
         BrowserSurfaceSnapshot surface = InspectBrowserSurface();
         if (IsBrowserAddressBarSurface(snapshot.Context, surface))
         {
-            if (decision.Candidate is not null && !decision.RequiresLiveRuntimeRead)
-            {
-                return new ReplacementPlan(
-                    snapshot,
-                    decision,
-                    ReplacementSafetyProfile.NativeSafe,
-                    ReplacementExecutionPath.NativeSelectionTransaction,
-                    "SendInput",
-                    $"profile={ReplacementSafetyProfile.NativeSafe} path={ReplacementExecutionPath.NativeSelectionTransaction} surface=browser-address-bar-no-clipboard");
-            }
-
-            return new ReplacementPlan(
-                snapshot,
-                decision,
-                ReplacementSafetyProfile.UnsafeSkip,
-                ReplacementExecutionPath.UnsafeSkip,
-                "AddressBarGuard",
-                $"profile={ReplacementSafetyProfile.UnsafeSkip} path={ReplacementExecutionPath.UnsafeSkip} surface=browser-address-bar-live-read-disabled");
+            var (addressBarProfile, path, adapterName, reason) = BuildAddressBarRoute(decision, surface.HasWritableValuePattern);
+            return new ReplacementPlan(snapshot, decision, addressBarProfile, path, adapterName, reason);
         }
 
         ReplacementSafetyProfile profile = ClassifyReplacementSafetyProfile(
@@ -652,6 +640,12 @@ public class AutoModeHandler
 
             if (string.IsNullOrWhiteSpace(actualWord) || actualWord.Length < 2)
             {
+                if (IsAddressBarBrowserValuePatternPlan(plan))
+                {
+                    LogSkip(snapshot, plan.AdapterName, "Browser ValuePattern aborted: unable to read current address bar word");
+                    return;
+                }
+
                 _diagnostics.Log(snapshot.ProcessName, snapshot.ControlClass, plan.AdapterName, true, OperationType.AutoMode,
                     snapshot.OriginalDisplay, null, DiagnosticResult.Skipped, "Browser ValuePattern aborted: unable to read current word -> Fallback to NativeSafe");
                 
@@ -1132,6 +1126,10 @@ public class AutoModeHandler
         && plan.Snapshot.ReadAdapter is UIAutomationTargetAdapter
         && !string.IsNullOrWhiteSpace(plan.Snapshot.LiveWord);
 
+    private static bool IsAddressBarBrowserValuePatternPlan(ReplacementPlan plan) =>
+        plan.ExecutionPath == ReplacementExecutionPath.BrowserValuePattern
+        && plan.Reason.Contains("surface=browser-address-bar", StringComparison.Ordinal);
+
     private static bool CanUseElectronBufferedFallback(CandidateDecision decision) =>
         decision.Candidate is not null
         && !decision.RequiresLiveRuntimeRead;
@@ -1321,6 +1319,35 @@ public class AutoModeHandler
 
         string normalizedName = (elementName ?? string.Empty).Trim().ToLowerInvariant();
         return BrowserAddressBarNameMarkers.Any(marker => string.Equals(normalizedName, marker, StringComparison.Ordinal));
+    }
+
+    private static (ReplacementSafetyProfile Profile, ReplacementExecutionPath Path, string AdapterName, string Reason) BuildAddressBarRoute(
+        CandidateDecision decision,
+        bool hasWritableValuePattern)
+    {
+        if (hasWritableValuePattern)
+        {
+            return (
+                ReplacementSafetyProfile.BrowserValuePatternSafe,
+                ReplacementExecutionPath.BrowserValuePattern,
+                "UIAutomationTargetAdapter",
+                $"profile={ReplacementSafetyProfile.BrowserValuePatternSafe} path={ReplacementExecutionPath.BrowserValuePattern} surface=browser-address-bar-value-pattern");
+        }
+
+        if (decision.Candidate is not null && !decision.RequiresLiveRuntimeRead)
+        {
+            return (
+                ReplacementSafetyProfile.NativeSafe,
+                ReplacementExecutionPath.NativeSelectionTransaction,
+                "SendInput",
+                $"profile={ReplacementSafetyProfile.NativeSafe} path={ReplacementExecutionPath.NativeSelectionTransaction} surface=browser-address-bar-no-clipboard");
+        }
+
+        return (
+            ReplacementSafetyProfile.BrowserBestEffort,
+            ReplacementExecutionPath.ClipboardAssistedSelection,
+            "ClipboardSelectionTransaction",
+            $"profile={ReplacementSafetyProfile.BrowserBestEffort} path={ReplacementExecutionPath.ClipboardAssistedSelection} surface=browser-address-bar-clipboard-fallback");
     }
 
     private static ReplacementSafetyProfile ClassifyReplacementSafetyProfile(

@@ -1056,6 +1056,72 @@ public class AutoModeHandlerRegressionTests
     }
 
     [Fact]
+    public void BuildAddressBarRoute_UsesValuePattern_WhenWritableValuePatternIsAvailable()
+    {
+        var decision = new CandidateDecision(
+            Candidate: null,
+            Source: CandidateSource.None,
+            RequiresLiveRuntimeRead: true,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "needs live read");
+
+        object route = InvokeBuildAddressBarRoute(decision, hasWritableValuePattern: true);
+        var values = ((System.Runtime.CompilerServices.ITuple)route);
+
+        Assert.Equal(ReplacementSafetyProfile.BrowserValuePatternSafe, values[0]);
+        Assert.Equal(ReplacementExecutionPath.BrowserValuePattern, values[1]);
+        Assert.Equal("UIAutomationTargetAdapter", values[2]);
+        Assert.Contains("browser-address-bar-value-pattern", Assert.IsType<string>(values[3]));
+    }
+
+    [Fact]
+    public void BuildAddressBarRoute_UsesNativeSelection_WhenBufferedCandidateIsAvailableWithoutValuePattern()
+    {
+        var candidate = new CorrectionCandidate(
+            "ghbdsn",
+            "привіт",
+            CorrectionDirection.EnToUa,
+            0.95,
+            "test");
+        var decision = new CandidateDecision(
+            candidate,
+            CandidateSource.PrimaryHeuristics,
+            RequiresLiveRuntimeRead: false,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "buffer candidate");
+
+        object route = InvokeBuildAddressBarRoute(decision, hasWritableValuePattern: false);
+        var values = ((System.Runtime.CompilerServices.ITuple)route);
+
+        Assert.Equal(ReplacementSafetyProfile.NativeSafe, values[0]);
+        Assert.Equal(ReplacementExecutionPath.NativeSelectionTransaction, values[1]);
+        Assert.Equal("SendInput", values[2]);
+        Assert.Contains("browser-address-bar-no-clipboard", Assert.IsType<string>(values[3]));
+    }
+
+    [Fact]
+    public void BuildAddressBarRoute_Skips_WhenNoWritableValuePatternAndLiveReadWouldBeRequired()
+    {
+        var decision = new CandidateDecision(
+            Candidate: null,
+            Source: CandidateSource.None,
+            RequiresLiveRuntimeRead: true,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "needs live read");
+
+        object route = InvokeBuildAddressBarRoute(decision, hasWritableValuePattern: false);
+        var values = ((System.Runtime.CompilerServices.ITuple)route);
+
+        Assert.Equal(ReplacementSafetyProfile.BrowserBestEffort, values[0]);
+        Assert.Equal(ReplacementExecutionPath.ClipboardAssistedSelection, values[1]);
+        Assert.Equal("ClipboardSelectionTransaction", values[2]);
+        Assert.Contains("browser-address-bar-clipboard-fallback", Assert.IsType<string>(values[3]));
+    }
+
+    [Fact]
     public void ClassifyReplacementSafetyProfile_UnsafeBrowserEditorSurface_SkipsAutoMode()
     {
         MethodInfo method = typeof(AutoModeHandler)
@@ -1099,6 +1165,14 @@ public class AutoModeHandlerRegressionTests
             .GetMethod("BuildUndoInputs", BindingFlags.NonPublic | BindingFlags.Static)!;
 
         return (NativeMethods.INPUT[])method.Invoke(null, new object[] { replacementText, restoreText })!;
+    }
+
+    private static object InvokeBuildAddressBarRoute(CandidateDecision decision, bool hasWritableValuePattern)
+    {
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("BuildAddressBarRoute", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        return method.Invoke(null, [decision, hasWritableValuePattern])!;
     }
 
     private static bool InvokeCanUseElectronBufferedFallback(CandidateDecision decision)

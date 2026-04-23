@@ -71,11 +71,13 @@ internal sealed record WordSnapshot(
     public string ExpectedOriginalWord =>
         !string.IsNullOrWhiteSpace(LiveWord)
             ? LiveWord
-            : !string.IsNullOrWhiteSpace(VisibleWord)
-            ? VisibleWord
             : (!string.IsNullOrWhiteSpace(LayoutTag) && LayoutTag.Equals("UA", StringComparison.OrdinalIgnoreCase)
-                ? (string.IsNullOrWhiteSpace(WordUA) ? WordEN : WordUA)
-                : (string.IsNullOrWhiteSpace(WordEN) ? WordUA : WordEN));
+                ? (string.IsNullOrWhiteSpace(WordUA)
+                    ? (!string.IsNullOrWhiteSpace(VisibleWord) ? VisibleWord : WordEN)
+                    : WordUA)
+                : (string.IsNullOrWhiteSpace(WordEN)
+                    ? (!string.IsNullOrWhiteSpace(VisibleWord) ? VisibleWord : WordUA)
+                    : WordEN));
 }
 
 internal sealed record CandidateDecision(
