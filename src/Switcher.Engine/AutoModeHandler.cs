@@ -17,6 +17,11 @@ public class AutoModeHandler
         "codex", "element", "slack", "discord", "teams"
     };
 
+    private static readonly HashSet<string> BrowserAddressBarProcesses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "chrome", "msedge", "brave", "opera", "vivaldi"
+    };
+
     private static readonly HashSet<string> DefaultElectronUiaProcesses = new(StringComparer.OrdinalIgnoreCase)
     {
         "element",
@@ -41,6 +46,16 @@ public class AutoModeHandler
         "editor"
     ];
 
+    private static readonly string[] BrowserAddressBarNameMarkers =
+    [
+        "address and search bar",
+        "address bar",
+        "search or enter address",
+        "search with google or enter address",
+        "адресний рядок",
+        "адресная строка"
+    ];
+
     private readonly ForegroundContextProvider _contextProvider;
     private readonly TextTargetCoordinator _coordinator;
     private readonly ExclusionManager _exclusions;
@@ -58,6 +73,7 @@ public class AutoModeHandler
         string LocalizedControlType,
         string ClassName,
         string AutomationId,
+        string ElementName,
         bool UnsafeCustomEditorLike,
         string Summary);
 
@@ -449,6 +465,28 @@ public class AutoModeHandler
         }
 
         BrowserSurfaceSnapshot surface = InspectBrowserSurface();
+        if (IsBrowserAddressBarSurface(snapshot.Context, surface))
+        {
+            if (decision.Candidate is not null && !decision.RequiresLiveRuntimeRead)
+            {
+                return new ReplacementPlan(
+                    snapshot,
+                    decision,
+                    ReplacementSafetyProfile.NativeSafe,
+                    ReplacementExecutionPath.NativeSelectionTransaction,
+                    "SendInput",
+                    $"profile={ReplacementSafetyProfile.NativeSafe} path={ReplacementExecutionPath.NativeSelectionTransaction} surface=browser-address-bar-no-clipboard");
+            }
+
+            return new ReplacementPlan(
+                snapshot,
+                decision,
+                ReplacementSafetyProfile.UnsafeSkip,
+                ReplacementExecutionPath.UnsafeSkip,
+                "AddressBarGuard",
+                $"profile={ReplacementSafetyProfile.UnsafeSkip} path={ReplacementExecutionPath.UnsafeSkip} surface=browser-address-bar-live-read-disabled");
+        }
+
         ReplacementSafetyProfile profile = ClassifyReplacementSafetyProfile(
             isBrowserLikeContext: true,
             hasWritableValuePattern: surface.HasWritableValuePattern,
@@ -1164,6 +1202,7 @@ public class AutoModeHandler
                     string.Empty,
                     string.Empty,
                     string.Empty,
+                    string.Empty,
                     false,
                     "uia=none");
             }
@@ -1177,7 +1216,8 @@ public class AutoModeHandler
             string localizedControlType = element.Current.LocalizedControlType ?? string.Empty;
             string className = element.Current.ClassName ?? string.Empty;
             string automationId = element.Current.AutomationId ?? string.Empty;
-            string merged = $"{controlType} {localizedControlType} {className} {automationId}".ToLowerInvariant();
+            string elementName = element.Current.Name ?? string.Empty;
+            string merged = $"{controlType} {localizedControlType} {className} {automationId} {elementName}".ToLowerInvariant();
             bool customType = element.Current.ControlType == ControlType.Document
                               || element.Current.ControlType == ControlType.Custom
                               || element.Current.ControlType == ControlType.Pane;
@@ -1192,8 +1232,9 @@ public class AutoModeHandler
                 LocalizedControlType: localizedControlType,
                 ClassName: className,
                 AutomationId: automationId,
+                ElementName: elementName,
                 UnsafeCustomEditorLike: unsafeCustom,
-                Summary: $"uia=value={hasWritableValuePattern} text={hasTextPattern} type={controlType}/{localizedControlType} class={className}");
+                Summary: $"uia=value={hasWritableValuePattern} text={hasTextPattern} type={controlType}/{localizedControlType} class={className} id={automationId} name={elementName}");
         }
         catch (Exception ex)
         {
@@ -1201,6 +1242,7 @@ public class AutoModeHandler
                 false,
                 false,
                 false,
+                string.Empty,
                 string.Empty,
                 string.Empty,
                 string.Empty,
@@ -1221,6 +1263,37 @@ public class AutoModeHandler
         && ElectronProcessCatalog.IsElectronProcess(processName)
         && (_settings.Current.ElectronUiaPathEnabled
             || DefaultElectronUiaProcesses.Contains(processName));
+
+    private static bool IsBrowserAddressBarSurface(ForegroundContext context, BrowserSurfaceSnapshot surface) =>
+        IsBrowserAddressBarSurface(
+            context.ProcessName,
+            surface.ControlType,
+            surface.LocalizedControlType,
+            surface.ClassName,
+            surface.AutomationId,
+            surface.ElementName);
+
+    private static bool IsBrowserAddressBarSurface(
+        string? processName,
+        string controlType,
+        string localizedControlType,
+        string className,
+        string automationId,
+        string elementName)
+    {
+        if (string.IsNullOrWhiteSpace(processName)
+            || !BrowserAddressBarProcesses.Contains(processName.Trim()))
+        {
+            return false;
+        }
+
+        string merged = $"{controlType} {localizedControlType} {className} {automationId} {elementName}".ToLowerInvariant();
+        if (merged.Contains("omnibox", StringComparison.Ordinal))
+            return true;
+
+        string normalizedName = (elementName ?? string.Empty).Trim().ToLowerInvariant();
+        return BrowserAddressBarNameMarkers.Any(marker => normalizedName.Contains(marker, StringComparison.Ordinal));
+    }
 
     private static ReplacementSafetyProfile ClassifyReplacementSafetyProfile(
         bool isBrowserLikeContext,

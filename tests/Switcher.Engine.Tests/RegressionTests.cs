@@ -946,6 +946,47 @@ public class AutoModeHandlerRegressionTests
         Assert.False(shouldUse);
     }
 
+    [Theory]
+    [InlineData("chrome", "ControlType.Edit", "edit", "Chrome_OmniboxView", "", "")]
+    [InlineData("msedge", "ControlType.Edit", "edit", "", "", "Address and search bar")]
+    [InlineData("brave", "ControlType.Edit", "edit", "", "", "Search or enter address")]
+    [InlineData("chrome", "ControlType.Edit", "edit", "", "", "Адресний рядок")]
+    public void IsBrowserAddressBarSurface_RecognizesBrowserOmnibox(
+        string processName,
+        string controlType,
+        string localizedControlType,
+        string className,
+        string automationId,
+        string elementName)
+    {
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("IsBrowserAddressBarSurface", BindingFlags.NonPublic | BindingFlags.Static, [typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(string)])!;
+
+        bool isAddressBar = (bool)method.Invoke(null, [processName, controlType, localizedControlType, className, automationId, elementName])!;
+
+        Assert.True(isAddressBar);
+    }
+
+    [Theory]
+    [InlineData("notepad", "ControlType.Edit", "edit", "Chrome_OmniboxView", "", "")]
+    [InlineData("chrome", "ControlType.Edit", "edit", "", "", "Address")]
+    [InlineData("chrome", "ControlType.Edit", "edit", "", "", "Street address")]
+    public void IsBrowserAddressBarSurface_DoesNotTreatNormalInputsAsOmnibox(
+        string processName,
+        string controlType,
+        string localizedControlType,
+        string className,
+        string automationId,
+        string elementName)
+    {
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("IsBrowserAddressBarSurface", BindingFlags.NonPublic | BindingFlags.Static, [typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(string)])!;
+
+        bool isAddressBar = (bool)method.Invoke(null, [processName, controlType, localizedControlType, className, automationId, elementName])!;
+
+        Assert.False(isAddressBar);
+    }
+
     [Fact]
     public void BuildUndoInputs_ReleasesModifiers_BackspacesReplacementAndRetypesOriginal()
     {
