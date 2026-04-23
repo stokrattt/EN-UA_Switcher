@@ -354,7 +354,7 @@ public static class CorrectionHeuristics
             && !containsDigit
             && !sourceDictionaryHit
             && !targetDictionaryHit
-            && tokenLength >= 5
+            && tokenLength >= 4
             && (LooksLikeKeyboardRowRun(lower) || LooksLikeKeyboardRowRun(convertedLower))
             && !targetHasUkrainianMorphologySignal)
         {
@@ -2004,7 +2004,7 @@ public static class CorrectionHeuristics
             return false;
 
         string lower = ExtractLettersOnly(token).ToLowerInvariant();
-        if (lower.Length < 5 || lower.Length > 10 || !lower.All(char.IsLetter))
+        if (lower.Length < 4 || lower.Length > 10 || !lower.All(char.IsLetter))
             return false;
 
         return KeyboardRows.Any(row =>

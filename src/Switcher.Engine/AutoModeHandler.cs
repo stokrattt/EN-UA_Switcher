@@ -1305,10 +1305,7 @@ public class AutoModeHandler
             return ReplacementSafetyProfile.NativeSafe;
 
         if (unsafeCustomSurface)
-            return safeOnlyMode ? ReplacementSafetyProfile.UnsafeSkip : ReplacementSafetyProfile.NativeSafe;
-
-        if (unsafeCustomSurface)
-            return safeOnlyMode ? ReplacementSafetyProfile.UnsafeSkip : ReplacementSafetyProfile.NativeSafe;
+            return ReplacementSafetyProfile.UnsafeSkip;
 
         if (hasWritableValuePattern)
             return ReplacementSafetyProfile.BrowserValuePatternSafe;

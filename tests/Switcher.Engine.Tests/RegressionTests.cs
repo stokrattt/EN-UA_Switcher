@@ -988,6 +988,19 @@ public class AutoModeHandlerRegressionTests
     }
 
     [Fact]
+    public void ClassifyReplacementSafetyProfile_UnsafeBrowserEditorSurface_SkipsAutoMode()
+    {
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("ClassifyReplacementSafetyProfile", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        object profile = method.Invoke(
+            null,
+            [true, true, false, true])!;
+
+        Assert.Equal(ReplacementSafetyProfile.UnsafeSkip, profile);
+    }
+
+    [Fact]
     public void BuildUndoInputs_ReleasesModifiers_BackspacesReplacementAndRetypesOriginal()
     {
         var inputs = InvokeBuildUndoInputs("привіт", "ghbdsn");

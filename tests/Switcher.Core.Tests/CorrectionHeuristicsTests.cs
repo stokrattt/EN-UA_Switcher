@@ -284,7 +284,9 @@ public class CorrectionHeuristicsTests
     }
 
     [Theory]
+    [InlineData("asdf")]
     [InlineData("asdfg")]
+    [InlineData("qwer")]
     [InlineData("qwert")]
     public void Evaluate_KeyboardRowLatinNoise_AutoMode_DoesNotConvert(string word)
     {
@@ -293,8 +295,11 @@ public class CorrectionHeuristicsTests
     }
 
     [Theory]
+    [InlineData("фіва")]
     [InlineData("фівап")]
+    [InlineData("йцук")]
     [InlineData("йцуке")]
+    [InlineData("гшщз")]
     [InlineData("нгшщз")]
     public void Evaluate_KeyboardRowCyrillicNoise_AutoMode_DoesNotConvert(string word)
     {
