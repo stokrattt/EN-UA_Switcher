@@ -1320,7 +1320,7 @@ public class AutoModeHandler
             return true;
 
         string normalizedName = (elementName ?? string.Empty).Trim().ToLowerInvariant();
-        return BrowserAddressBarNameMarkers.Any(marker => normalizedName.Contains(marker, StringComparison.Ordinal));
+        return BrowserAddressBarNameMarkers.Any(marker => string.Equals(normalizedName, marker, StringComparison.Ordinal));
     }
 
     private static ReplacementSafetyProfile ClassifyReplacementSafetyProfile(

@@ -1037,6 +1037,8 @@ public class AutoModeHandlerRegressionTests
     [InlineData("notepad", "ControlType.Edit", "edit", "Chrome_OmniboxView", "", "")]
     [InlineData("chrome", "ControlType.Edit", "edit", "", "", "Address")]
     [InlineData("chrome", "ControlType.Edit", "edit", "", "", "Street address")]
+    [InlineData("chrome", "ControlType.Edit", "edit", "", "", "Address and search bar for project field")]
+    [InlineData("chrome", "ControlType.Edit", "edit", "", "", "Search or enter address here")]
     public void IsBrowserAddressBarSurface_DoesNotTreatNormalInputsAsOmnibox(
         string processName,
         string controlType,

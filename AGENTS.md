@@ -1,6 +1,6 @@
 # AGENTS
 
-Last updated: 2026-04-19
+Last updated: 2026-04-23
 
 ## Purpose
 
@@ -246,6 +246,36 @@ All 4 cherry-picks from PR #1 are now implemented and tested.
   - packaging from `scripts/publish-release.ps1`
   - upload from `.github/workflows/release.yml`
 - `StartupHelper.SetStartup(...)` is refreshed on engine startup so upgrades rewrite HKCU autorun to the current exe path.
+
+## Release Discipline (must follow)
+
+- If the user asks to "build a release", "deploy", "publish", "update GitHub", or "update the release",
+  do not publish partially updated output.
+- Before tagging or publishing, verify that all changed source files, scripts, workflow files, packaging files,
+  version files, and release-facing folders are committed and pushed.
+- Do not assume "main is enough".
+  Confirm that the actual release artifact is built from the latest commit that contains the fixes discussed with the user.
+- After release build:
+  - verify the produced executable(s) are from the current version
+  - verify the uploaded release assets match the current commit/tag
+  - verify GitHub release contents are complete and not left on an older build
+  - verify no folder or asset group was skipped during packaging/upload
+- If version is bumped, make sure version references stay consistent across:
+  - `Directory.Build.props`
+  - release notes
+  - workflow/package output naming
+  - README if install/version text depends on it
+- If the user asks to "update everything in Git", also check for missing tracked files/folders,
+  stale generated artifacts, and mismatches between repo contents and release contents.
+- Never leave a state where:
+  - code in `main` is newer than the published release asset
+  - some folders are updated in Git but omitted from the shipped release
+  - the release page shows an older binary than the current documented version
+- After publishing, do a final sanity pass:
+  - `git status`
+  - local build/test
+  - tag points at the intended commit
+  - release assets and displayed version agree with the repo
 
 ## Maintenance Note
 
