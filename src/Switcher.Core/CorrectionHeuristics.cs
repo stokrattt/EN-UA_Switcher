@@ -742,10 +742,19 @@ public static class CorrectionHeuristics
             int dstDistinct = convertedLower.Where(char.IsLetter).Distinct().Count();
             int srcTotal = lower.Count(char.IsLetter);
             int dstTotal = convertedLower.Count(char.IsLetter);
+            bool targetHasCommonDoubleLetterShape =
+                convertedLower.Length >= 5
+                && HasCommonEnglishDoubleLetter(convertedLower)
+                && convertedLower.Count(c => EnVowels.Contains(c)) >= 2
+                && targetScore >= 0.20
+                && targetZeroRatio <= 0.45;
             if (srcTotal > 0 && dstTotal > 0
                 && (double)srcDistinct / srcTotal < 0.70
-                && (double)dstDistinct / dstTotal < 0.70)
+                && (double)dstDistinct / dstTotal < 0.70
+                && !targetHasCommonDoubleLetterShape)
+            {
                 return null;
+            }
         }
 
         if (mode == CorrectionMode.Auto && !containsDigit)
@@ -1581,6 +1590,12 @@ public static class CorrectionHeuristics
         "ячсмитьбю"
     ];
 
+    private static readonly string[] CommonEnglishDoubleLetters =
+    [
+        "bb", "cc", "dd", "ee", "ff", "gg", "ll",
+        "mm", "nn", "oo", "pp", "rr", "ss", "tt"
+    ];
+
     private static readonly string[] UkrainianMorphologyEndings =
     [
         "ами", "ями", "ові", "еві", "ому", "ими", "іми",
@@ -2011,6 +2026,9 @@ public static class CorrectionHeuristics
             row.Contains(lower, StringComparison.Ordinal)
             || new string(row.Reverse().ToArray()).Contains(lower, StringComparison.Ordinal));
     }
+
+    private static bool HasCommonEnglishDoubleLetter(string lower) =>
+        CommonEnglishDoubleLetters.Any(pair => lower.Contains(pair, StringComparison.Ordinal));
 
     private static bool LooksLikeTechnicalTextToken(string token)
     {

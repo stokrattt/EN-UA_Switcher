@@ -115,6 +115,15 @@ public class CorrectionHeuristicsTests
         Assert.Equal("hello", result.ConvertedText);
     }
 
+    [Fact]
+    public void Evaluate_GoogleWithDoubleLetterInAutoMode_Converted()
+    {
+        var result = Evaluate("пщщпду", CorrectionMode.Auto);
+        Assert.NotNull(result);
+        Assert.Equal(CorrectionDirection.UaToEn, result!.Direction);
+        Assert.Equal("google", result.ConvertedText);
+    }
+
     [Theory]
     [InlineData("ещтшс", "tonic")]   // е→t щ→o т→n ш→i с→c
     [InlineData("пщдиукп", "golberg")] // п→g щ→o д→l и→b у→e к→r п→g
