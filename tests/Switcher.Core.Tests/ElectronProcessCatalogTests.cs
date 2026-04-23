@@ -11,6 +11,7 @@ public class ElectronProcessCatalogTests
     [InlineData("code")]
     [InlineData("Code")]
     [InlineData("CODE")]
+    [InlineData("codex")]
     [InlineData("cursor")]
     [InlineData("windsurf")]
     [InlineData("vscodium")]
@@ -103,6 +104,7 @@ public class ElectronProcessCatalogTests
     {
         var processes = ElectronProcessCatalog.Processes;
         Assert.Contains("code", processes, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("codex", processes, StringComparer.OrdinalIgnoreCase);
         Assert.Contains("slack", processes, StringComparer.OrdinalIgnoreCase);
         Assert.Contains("discord", processes, StringComparer.OrdinalIgnoreCase);
         Assert.Contains("obsidian", processes, StringComparer.OrdinalIgnoreCase);

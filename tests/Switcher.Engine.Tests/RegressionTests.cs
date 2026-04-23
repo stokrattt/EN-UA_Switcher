@@ -891,6 +891,7 @@ public class AutoModeHandlerRegressionTests
     [Theory]
     [InlineData("code")]
     [InlineData("code - insiders")]
+    [InlineData("codex")]
     [InlineData("cursor")]
     [InlineData("element")]
     [InlineData("element-desktop")]

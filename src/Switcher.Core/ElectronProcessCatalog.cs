@@ -11,7 +11,7 @@ public static class ElectronProcessCatalog
     private static readonly HashSet<string> ElectronProcesses = new(StringComparer.OrdinalIgnoreCase)
     {
         // Development
-        "code", "code - insiders", "cursor", "vscodium", "windsurf", "atom",
+        "code", "code - insiders", "cursor", "vscodium", "windsurf", "codex", "atom",
         // Communication
         "slack", "discord", "discordcanary", "discordptb",
         "teams", "ms-teams", "msteams",

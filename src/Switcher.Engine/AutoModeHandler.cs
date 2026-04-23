@@ -26,6 +26,7 @@ public class AutoModeHandler
     {
         "code",
         "code - insiders",
+        "codex",
         "cursor",
         "element",
         "element-desktop",
