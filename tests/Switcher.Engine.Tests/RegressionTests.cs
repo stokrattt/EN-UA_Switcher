@@ -889,8 +889,13 @@ public class AutoModeHandlerRegressionTests
     }
 
     [Theory]
+    [InlineData("code")]
+    [InlineData("code - insiders")]
+    [InlineData("cursor")]
     [InlineData("element")]
     [InlineData("element-desktop")]
+    [InlineData("vscodium")]
+    [InlineData("windsurf")]
     public void ShouldUseElectronUiaPath_DefaultsToTrueForElement(string processName)
     {
         var settings = new SettingsManager

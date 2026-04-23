@@ -24,8 +24,13 @@ public class AutoModeHandler
 
     private static readonly HashSet<string> DefaultElectronUiaProcesses = new(StringComparer.OrdinalIgnoreCase)
     {
+        "code",
+        "code - insiders",
+        "cursor",
         "element",
-        "element-desktop"
+        "element-desktop",
+        "vscodium",
+        "windsurf"
     };
 
     private static readonly HashSet<string> BrowserLikeWindowClasses = new(StringComparer.OrdinalIgnoreCase)
