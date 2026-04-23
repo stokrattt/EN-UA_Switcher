@@ -951,6 +951,66 @@ public class AutoModeHandlerRegressionTests
         Assert.False(shouldUse);
     }
 
+    [Fact]
+    public void CanUseElectronBufferedFallback_AllowsResolvedBufferedCandidate()
+    {
+        var candidate = new CorrectionCandidate(
+            "руддщ",
+            "hello",
+            CorrectionDirection.UaToEn,
+            0.95,
+            "test");
+        var decision = new CandidateDecision(
+            candidate,
+            CandidateSource.PrimaryHeuristics,
+            RequiresLiveRuntimeRead: false,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "buffer candidate");
+
+        bool canFallback = InvokeCanUseElectronBufferedFallback(decision);
+
+        Assert.True(canFallback);
+    }
+
+    [Fact]
+    public void CanUseElectronBufferedFallback_BlocksLiveRuntimeOnlyDecision()
+    {
+        var candidate = new CorrectionCandidate(
+            "руддщ",
+            "hello",
+            CorrectionDirection.UaToEn,
+            0.95,
+            "test");
+        var decision = new CandidateDecision(
+            candidate,
+            CandidateSource.PrimaryHeuristics,
+            RequiresLiveRuntimeRead: true,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "needs live read");
+
+        bool canFallback = InvokeCanUseElectronBufferedFallback(decision);
+
+        Assert.False(canFallback);
+    }
+
+    [Fact]
+    public void CanUseElectronBufferedFallback_BlocksMissingCandidate()
+    {
+        var decision = new CandidateDecision(
+            Candidate: null,
+            Source: CandidateSource.None,
+            RequiresLiveRuntimeRead: false,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "no candidate");
+
+        bool canFallback = InvokeCanUseElectronBufferedFallback(decision);
+
+        Assert.False(canFallback);
+    }
+
     [Theory]
     [InlineData("chrome", "ControlType.Edit", "edit", "Chrome_OmniboxView", "", "")]
     [InlineData("msedge", "ControlType.Edit", "edit", "", "", "Address and search bar")]
@@ -1036,6 +1096,14 @@ public class AutoModeHandlerRegressionTests
             .GetMethod("BuildUndoInputs", BindingFlags.NonPublic | BindingFlags.Static)!;
 
         return (NativeMethods.INPUT[])method.Invoke(null, new object[] { replacementText, restoreText })!;
+    }
+
+    private static bool InvokeCanUseElectronBufferedFallback(CandidateDecision decision)
+    {
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("CanUseElectronBufferedFallback", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        return (bool)method.Invoke(null, [decision])!;
     }
 
     private static object CreateWordSnapshot(

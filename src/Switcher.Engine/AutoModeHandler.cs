@@ -722,14 +722,26 @@ public class AutoModeHandler
         // 1. Read live word via UIA (TextPattern or ValuePattern)
         var adapter = new UIAutomationTargetAdapter();
         string? actualWord = adapter.TryGetLastWord(snapshot.Context);
+        CorrectionCandidate? candidate = null;
+        bool usedBufferedFallback = false;
 
-        if (string.IsNullOrWhiteSpace(actualWord) || actualWord.Length < 2)
+        bool hasReliableLiveWord = !string.IsNullOrWhiteSpace(actualWord) && actualWord.Length >= 2;
+        if (!hasReliableLiveWord)
         {
-            LogSkip(snapshot, plan.AdapterName,
-                "Electron: UIA unavailable or word too short — auto-correction skipped to avoid selection race");
-            TryReinjectDelimiter(plan);
-            return;
+            if (!CanUseElectronBufferedFallback(plan.Decision))
+            {
+                LogSkip(snapshot, plan.AdapterName,
+                    "Electron: UIA unavailable or word too short - auto-correction skipped to avoid selection race");
+                TryReinjectDelimiter(plan);
+                return;
+            }
+
+            candidate = plan.Decision.Candidate!;
+            actualWord = candidate.OriginalText;
+            usedBufferedFallback = true;
         }
+
+        string currentWord = actualWord!;
 
         if (_observer.UserKeyDownCounter != startCount)
         {
@@ -738,27 +750,33 @@ public class AutoModeHandler
             return;
         }
 
-        // 2. Evaluate candidate from live word
-        CorrectionCandidate? candidate;
-        if (plan.Decision.RequiresLiveRuntimeRead
-            || !ExactSliceMatchesExpected(actualWord, plan.Decision.Candidate?.OriginalText ?? snapshot.ExpectedOriginalWord))
+        // 2. Evaluate candidate from live word, or use the buffered candidate when UIA is unavailable.
+        if (!usedBufferedFallback && (plan.Decision.RequiresLiveRuntimeRead
+            || !ExactSliceMatchesExpected(currentWord, plan.Decision.Candidate?.OriginalText ?? snapshot.ExpectedOriginalWord)))
         {
-            var liveDecision = BuildLiveRuntimeCandidateDecision(snapshot, actualWord);
+            var liveDecision = BuildLiveRuntimeCandidateDecision(snapshot, currentWord);
             candidate = liveDecision.Candidate;
             if (candidate is null)
             {
-                LogSkip(snapshot, plan.AdapterName, $"Electron UIA skipped: {liveDecision.Reason}", actualWord);
+                LogSkip(snapshot, plan.AdapterName, $"Electron UIA skipped: {liveDecision.Reason}", currentWord);
                 TryReinjectDelimiter(plan);
                 return;
             }
         }
         else
         {
-            candidate = plan.Decision.Candidate;
+            candidate ??= plan.Decision.Candidate;
+        }
+
+        if (candidate is null)
+        {
+            LogSkip(snapshot, plan.AdapterName, "Electron UIA skipped: no conversion candidate", currentWord);
+            TryReinjectDelimiter(plan);
+            return;
         }
 
         // 3. Final abort check
-        if (TryAbortPreconditions(snapshot, candidate!.OriginalText, "Electron UIA before replace", out abortReason))
+        if (TryAbortPreconditions(snapshot, candidate.OriginalText, "Electron UIA before replace", out abortReason))
         {
             LogSkip(snapshot, plan.AdapterName, $"Electron UIA aborted: {abortReason}");
             TryReinjectDelimiter(plan);
@@ -816,11 +834,11 @@ public class AutoModeHandler
             plan.AdapterName,
             true,
             OperationType.AutoMode,
-            actualWord,
+            currentWord,
             candidate.ConvertedText,
             success ? DiagnosticResult.Replaced : DiagnosticResult.Error,
             success
-                ? $"{plan.Reason}; {plan.Decision.Reason}"
+                ? $"{plan.Reason}; {(usedBufferedFallback ? "buffer fallback after UIA unavailable; " : string.Empty)}{plan.Decision.Reason}"
                 : $"{plan.Reason}; SendInput returned {sent}/{inputs.Length}");
 
         if (success)
@@ -1112,6 +1130,10 @@ public class AutoModeHandler
         && !plan.Decision.RequiresLiveRuntimeRead
         && plan.Snapshot.ReadAdapter is UIAutomationTargetAdapter
         && !string.IsNullOrWhiteSpace(plan.Snapshot.LiveWord);
+
+    private static bool CanUseElectronBufferedFallback(CandidateDecision decision) =>
+        decision.Candidate is not null
+        && !decision.RequiresLiveRuntimeRead;
 
     private static bool ShouldSuppressDelimiter(ReplacementPlan plan) =>
         !(plan.ExecutionPath == ReplacementExecutionPath.BrowserValuePattern
