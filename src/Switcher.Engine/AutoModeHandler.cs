@@ -10,6 +10,7 @@ public class AutoModeHandler
     private const int BrowserValuePatternStartDelayMs = 70;
     private const int ElectronUiaStartDelayMs = 45;
     private const int ClipboardAssistedStartDelayMs = 150;
+    private const int AddressBarRewriteIdleDelayMs = 320;
 
     private static readonly HashSet<string> BrowserProcesses = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -85,6 +86,9 @@ public class AutoModeHandler
 
     private UndoState? _lastCorrection;
     private int _autoOperationInFlight;
+    private int _addressBarRewriteInFlight;
+    private long _addressBarRewriteVersion;
+    private ReplacementPlan? _latestAddressBarRewritePlan;
 
     public AutoModeHandler(
         ForegroundContextProvider contextProvider,
@@ -163,6 +167,12 @@ public class AutoModeHandler
         if (plan.SafetyProfile == ReplacementSafetyProfile.UnsafeSkip)
         {
             LogSkip(snapshot, plan.AdapterName, plan.Reason);
+            return;
+        }
+
+        if (plan.ExecutionPath == ReplacementExecutionPath.BrowserAddressBarFullTextRewrite)
+        {
+            ScheduleBrowserAddressBarRewrite(plan);
             return;
         }
 
@@ -306,8 +316,7 @@ public class AutoModeHandler
             source = candidate is null ? CandidateSource.None : CandidateSource.PrimaryHeuristics;
         }
 
-        if (candidate is null && !snapshot.BufferQuality.HasChromeLikeGarbage
-            && (snapshot.BufferQuality.RecoveryCount > 0 || snapshot.BufferQuality.DroppedKeyCount > 0))
+        if (candidate is null && snapshot.BufferQuality.NeedsLiveDiscovery)
         {
             if (!string.Equals(snapshot.AnalysisVkEN, snapshot.AnalysisWordEN, StringComparison.Ordinal))
                 candidate = TryEvaluateCandidate(snapshot.AnalysisVkEN, snapshot.VisibleTrailingSuffix);
@@ -528,6 +537,9 @@ public class AutoModeHandler
                     break;
                 case ReplacementExecutionPath.ClipboardAssistedSelection:
                     await ExecuteClipboardAssistedReplacement(plan);
+                    break;
+                case ReplacementExecutionPath.BrowserAddressBarFullTextRewrite:
+                    await ExecuteBrowserAddressBarFullTextRewrite(plan);
                     break;
                 case ReplacementExecutionPath.ElectronUiaBackspaceReplace:
                     await ExecuteElectronUiaReplacement(plan);
@@ -846,7 +858,7 @@ public class AutoModeHandler
             return;
         }
 
-        string expectedWord = plan.Decision.Candidate?.OriginalText ?? snapshot.ExpectedOriginalWord;
+        string expectedWord = GetClipboardPreconditionExpectedWord(plan);
         if (TryAbortPreconditions(snapshot, expectedWord, "Browser best-effort preflight", out string abortReason))
         {
             LogSkip(snapshot, plan.AdapterName, $"Browser best-effort aborted: {abortReason}");
@@ -931,7 +943,15 @@ public class AutoModeHandler
                 }
             }
 
-            if (TryAbortPreconditions(snapshot, candidate!.OriginalText, "Browser best-effort before replace", out abortReason))
+            if (candidate is null)
+            {
+                LogSkip(snapshot, plan.AdapterName, "Browser best-effort skipped: no conversion candidate", liveWord);
+                TryReinjectDelimiter(plan);
+                return;
+            }
+
+            string beforeReplaceExpected = GetClipboardBeforeReplaceExpectedWord(plan, candidate);
+            if (TryAbortPreconditions(snapshot, beforeReplaceExpected, "Browser best-effort before replace", out abortReason))
             {
                 LogSkip(snapshot, plan.AdapterName, $"Browser best-effort aborted: {abortReason}");
                 TryReinjectDelimiter(plan);
@@ -962,6 +982,89 @@ public class AutoModeHandler
 
             Thread.Sleep(30);
             TryReinjectDelimiter(plan);
+        }
+        finally
+        {
+            NativeMethods.SetClipboardText(savedClipboard);
+        }
+    }
+
+    private async Task ExecuteBrowserAddressBarFullTextRewrite(ReplacementPlan plan)
+    {
+        var snapshot = plan.Snapshot;
+
+        if (TryAbortPreconditions(
+                snapshot,
+                string.Empty,
+                "Browser address bar full-text rewrite",
+                out string abortReason,
+                allowPostDelimiterInteraction: true))
+        {
+            LogSkip(snapshot, plan.AdapterName, $"Browser address bar full-text rewrite aborted: {abortReason}");
+            return;
+        }
+
+        string? savedClipboard = NativeMethods.GetClipboardText();
+        NativeMethods.SetClipboardText(null);
+
+        try
+        {
+            NativeMethods.INPUT[] selectAllInputs = BuildSelectAllInputs();
+            NativeMethods.SendInput((uint)selectAllInputs.Length, selectAllInputs, Marshal.SizeOf<NativeMethods.INPUT>());
+            await Task.Delay(35);
+
+            NativeMethods.INPUT[] copyInputs = BuildCopyInputs();
+            NativeMethods.SendInput((uint)copyInputs.Length, copyInputs, Marshal.SizeOf<NativeMethods.INPUT>());
+
+            string? currentText = null;
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                await Task.Delay(attempt == 0 ? 60 : 90);
+                currentText = NativeMethods.GetClipboardText();
+                if (!string.IsNullOrWhiteSpace(currentText))
+                    break;
+            }
+
+            if (string.IsNullOrWhiteSpace(currentText))
+            {
+                LogSkip(snapshot, plan.AdapterName, "Browser address bar full-text rewrite aborted: clipboard read is stale or empty");
+                CollapseSelectionRight();
+                return;
+            }
+
+            string rewritten = RewriteAddressBarText(currentText, snapshot.Context.ProcessName, out int replacementCount);
+            if (replacementCount == 0 || string.Equals(rewritten, currentText, StringComparison.Ordinal))
+            {
+                LogSkip(snapshot, plan.AdapterName, "Browser address bar full-text rewrite skipped: no convertible tokens", currentText);
+                CollapseSelectionRight();
+                return;
+            }
+
+            NativeMethods.SendInput((uint)selectAllInputs.Length, selectAllInputs, Marshal.SizeOf<NativeMethods.INPUT>());
+            await Task.Delay(25);
+
+            NativeMethods.INPUT[] typeInputs = BuildUnicodeInputs(rewritten);
+            uint sent = NativeMethods.SendInput((uint)typeInputs.Length, typeInputs, Marshal.SizeOf<NativeMethods.INPUT>());
+            bool success = sent == (uint)typeInputs.Length;
+
+            _diagnostics.Log(
+                snapshot.ProcessName,
+                snapshot.ControlClass,
+                plan.AdapterName,
+                true,
+                OperationType.AutoMode,
+                currentText,
+                rewritten,
+                success ? DiagnosticResult.Replaced : DiagnosticResult.Error,
+                success
+                    ? $"{plan.Reason}; rewrittenTokens={replacementCount}"
+                    : $"{plan.Reason}; SendInput returned {sent}/{typeInputs.Length}");
+
+            if (success)
+            {
+                _observer.ClearBuffer();
+                _lastCorrection = null;
+            }
         }
         finally
         {
@@ -1031,6 +1134,77 @@ public class AutoModeHandler
     }
 
     private void EndAutoOperation() => Volatile.Write(ref _autoOperationInFlight, 0);
+
+    private void ScheduleBrowserAddressBarRewrite(ReplacementPlan plan)
+    {
+        Volatile.Write(ref _latestAddressBarRewritePlan, plan);
+        Interlocked.Increment(ref _addressBarRewriteVersion);
+
+        _diagnostics.Log(
+            plan.Snapshot.ProcessName,
+            plan.Snapshot.ControlClass,
+            plan.AdapterName,
+            true,
+            OperationType.AutoMode,
+            string.Empty,
+            null,
+            DiagnosticResult.Skipped,
+            $"Queued {plan.Reason}");
+
+        if (Interlocked.CompareExchange(ref _addressBarRewriteInFlight, 1, 0) == 0)
+            _ = Task.Run(RunBrowserAddressBarRewriteLoop);
+    }
+
+    private async Task RunBrowserAddressBarRewriteLoop()
+    {
+        try
+        {
+            while (true)
+            {
+                long observedVersion = Volatile.Read(ref _addressBarRewriteVersion);
+                long observedKeys = _observer.UserKeyDownCounter;
+
+                await Task.Delay(AddressBarRewriteIdleDelayMs);
+
+                if (Volatile.Read(ref _addressBarRewriteVersion) != observedVersion)
+                    continue;
+
+                if (_observer.UserKeyDownCounter != observedKeys)
+                    continue;
+
+                ReplacementPlan? plan = Volatile.Read(ref _latestAddressBarRewritePlan);
+                if (plan is null)
+                    return;
+
+                await ExecuteBrowserAddressBarFullTextRewrite(plan);
+
+                if (Volatile.Read(ref _addressBarRewriteVersion) == observedVersion)
+                {
+                    Volatile.Write(ref _latestAddressBarRewritePlan, null);
+                    return;
+                }
+            }
+        }
+        finally
+        {
+            Volatile.Write(ref _addressBarRewriteInFlight, 0);
+
+            ReplacementPlan? plan = Volatile.Read(ref _latestAddressBarRewritePlan);
+            if (plan is not null && Volatile.Read(ref _addressBarRewriteVersion) > 0)
+            {
+                long keys = _observer.UserKeyDownCounter;
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(AddressBarRewriteIdleDelayMs);
+                    if (_observer.UserKeyDownCounter == keys
+                        && Interlocked.CompareExchange(ref _addressBarRewriteInFlight, 1, 0) == 0)
+                    {
+                        await RunBrowserAddressBarRewriteLoop();
+                    }
+                });
+            }
+        }
+    }
 
     private void FinalizeSuccessfulReplacement(WordSnapshot snapshot, CorrectionCandidate candidate)
     {
@@ -1148,8 +1322,9 @@ public class AutoModeHandler
         && !decision.RequiresLiveRuntimeRead;
 
     private static bool ShouldSuppressDelimiter(ReplacementPlan plan) =>
-        !(plan.ExecutionPath == ReplacementExecutionPath.BrowserValuePattern
-          && plan.Snapshot.DelimiterVk == NativeMethods.VK_SPACE);
+        plan.ExecutionPath != ReplacementExecutionPath.BrowserAddressBarFullTextRewrite
+        && !(plan.ExecutionPath == ReplacementExecutionPath.BrowserValuePattern
+             && plan.Snapshot.DelimiterVk == NativeMethods.VK_SPACE);
 
     private static CorrectionCandidate? TryEvaluateCandidate(string text, string visibleTrailingSuffix)
     {
@@ -1181,6 +1356,64 @@ public class AutoModeHandler
         return preferred.Length >= 2 ? preferred.Length : snapshot.BufferQuality.ApproxWordLength;
     }
 
+    private static string GetClipboardPreconditionExpectedWord(ReplacementPlan plan) =>
+        plan.Decision.RequiresLiveRuntimeRead
+            ? string.Empty
+            : plan.Decision.Candidate?.OriginalText ?? plan.Snapshot.ExpectedOriginalWord;
+
+    private static string GetClipboardBeforeReplaceExpectedWord(ReplacementPlan plan, CorrectionCandidate candidate) =>
+        plan.Decision.RequiresLiveRuntimeRead ? string.Empty : candidate.OriginalText;
+
+    private static string RewriteAddressBarText(string text, string? processName, out int replacementCount)
+    {
+        replacementCount = 0;
+        if (string.IsNullOrWhiteSpace(text))
+            return text;
+
+        var result = new System.Text.StringBuilder(text.Length);
+        int index = 0;
+        while (index < text.Length)
+        {
+            if (char.IsWhiteSpace(text[index]))
+            {
+                result.Append(text[index]);
+                index++;
+                continue;
+            }
+
+            int start = index;
+            while (index < text.Length && !char.IsWhiteSpace(text[index]))
+                index++;
+
+            string token = text[start..index];
+            string replacement = RewriteAddressBarToken(token, text, processName, out bool changed);
+            if (changed)
+                replacementCount++;
+
+            result.Append(replacement);
+        }
+
+        return result.ToString();
+    }
+
+    private static string RewriteAddressBarToken(string token, string fullText, string? processName, out bool changed)
+    {
+        changed = false;
+        if (string.IsNullOrWhiteSpace(token))
+            return token;
+
+        string? guardReason = AutoContextGuards.GetUnsafeAutoCorrectionReason(token, fullText, processName);
+        if (guardReason is not null)
+            return token;
+
+        CorrectionCandidate? candidate = CorrectionHeuristics.Evaluate(token, CorrectionMode.Auto);
+        if (candidate is null || string.Equals(candidate.ConvertedText, token, StringComparison.Ordinal))
+            return token;
+
+        changed = true;
+        return candidate.ConvertedText;
+    }
+
     private static NativeMethods.INPUT[] BuildSelectionInputs(int length)
     {
         var inputs = new NativeMethods.INPUT[2 + (length * 2)];
@@ -1192,6 +1425,22 @@ public class AutoModeHandler
             inputs[idx++] = NativeMethods.MakeExtKeyInput(NativeMethods.VK_LEFT, keyUp: true);
         }
         inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_SHIFT, keyUp: true);
+        return inputs;
+    }
+
+    private static NativeMethods.INPUT[] BuildSelectAllInputs()
+    {
+        var modifierRelease = NativeMethods.BuildModifierReleaseInputs();
+        var inputs = new NativeMethods.INPUT[modifierRelease.Length + 4];
+        int idx = 0;
+
+        foreach (var input in modifierRelease)
+            inputs[idx++] = input;
+
+        inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_CONTROL, keyUp: false);
+        inputs[idx++] = NativeMethods.MakeKeyInput(0x41, keyUp: false);
+        inputs[idx++] = NativeMethods.MakeKeyInput(0x41, keyUp: true);
+        inputs[idx++] = NativeMethods.MakeKeyInput(NativeMethods.VK_CONTROL, keyUp: true);
         return inputs;
     }
 
@@ -1338,29 +1587,20 @@ public class AutoModeHandler
         CandidateDecision decision,
         bool hasWritableValuePattern)
     {
+        _ = decision;
+
         if (hasWritableValuePattern)
-        {
             return (
                 ReplacementSafetyProfile.BrowserValuePatternSafe,
                 ReplacementExecutionPath.BrowserValuePattern,
                 "UIAutomationTargetAdapter",
-                $"profile={ReplacementSafetyProfile.BrowserValuePatternSafe} path={ReplacementExecutionPath.BrowserValuePattern} surface=browser-address-bar-value-pattern");
-        }
-
-        if (decision.Candidate is not null && !decision.RequiresLiveRuntimeRead)
-        {
-            return (
-                ReplacementSafetyProfile.NativeSafe,
-                ReplacementExecutionPath.NativeSelectionTransaction,
-                "SendInput",
-                $"profile={ReplacementSafetyProfile.NativeSafe} path={ReplacementExecutionPath.NativeSelectionTransaction} surface=browser-address-bar-no-clipboard");
-        }
+                $"profile={ReplacementSafetyProfile.BrowserValuePatternSafe} path={ReplacementExecutionPath.BrowserValuePattern} surface=browser-address-bar");
 
         return (
             ReplacementSafetyProfile.BrowserBestEffort,
-            ReplacementExecutionPath.ClipboardAssistedSelection,
-            "ClipboardSelectionTransaction",
-            $"profile={ReplacementSafetyProfile.BrowserBestEffort} path={ReplacementExecutionPath.ClipboardAssistedSelection} surface=browser-address-bar-clipboard-fallback");
+            ReplacementExecutionPath.BrowserAddressBarFullTextRewrite,
+            "AddressBarFullTextRewrite",
+            $"profile={ReplacementSafetyProfile.BrowserBestEffort} path={ReplacementExecutionPath.BrowserAddressBarFullTextRewrite} surface=browser-address-bar-full-text-rewrite");
     }
 
     private static ReplacementSafetyProfile ClassifyReplacementSafetyProfile(
@@ -1372,14 +1612,14 @@ public class AutoModeHandler
         if (!isBrowserLikeContext)
             return ReplacementSafetyProfile.NativeSafe;
 
-        if (unsafeCustomSurface)
-            return ReplacementSafetyProfile.UnsafeSkip;
-
         if (hasWritableValuePattern)
             return ReplacementSafetyProfile.BrowserValuePatternSafe;
 
         if (safeOnlyMode)
             return ReplacementSafetyProfile.UnsafeSkip;
+
+        if (unsafeCustomSurface)
+            return ReplacementSafetyProfile.BrowserBestEffort;
 
         return ReplacementSafetyProfile.BrowserBestEffort;
     }

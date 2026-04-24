@@ -25,6 +25,13 @@ public class RealWorldHeuristicRegressionPackTests
     [InlineData("ізщешан", "spotify", CorrectionDirection.UaToEn)]
     [InlineData("цшт11", "win11", CorrectionDirection.UaToEn)]
     [InlineData("кеч4050", "rtx4050", CorrectionDirection.UaToEn)]
+    [InlineData("ghbdsn", "привіт", CorrectionDirection.EnToUa)]
+    [InlineData("сркщьу", "chrome", CorrectionDirection.UaToEn)]
+    [InlineData("пкуз", "grep", CorrectionDirection.UaToEn)]
+    [InlineData("руддщ", "hello", CorrectionDirection.UaToEn)]
+    [InlineData("wb[", "цих", CorrectionDirection.EnToUa)]
+    [InlineData("ldj[", "двох", CorrectionDirection.EnToUa)]
+    [InlineData("vscwz[", "місцях", CorrectionDirection.EnToUa)]
     public void Evaluate_ManualQaWords_AutoMode_Converts(string typed, string expected, CorrectionDirection direction)
     {
         var result = Evaluate(typed);
@@ -40,6 +47,14 @@ public class RealWorldHeuristicRegressionPackTests
     [InlineData("spotify")]
     [InlineData("telegram")]
     [InlineData("discord")]
+    [InlineData("лефт")]
+    [InlineData("шифт")]
+    [InlineData("виділенням")]
+    [InlineData("оце")]
+    [InlineData("jwt")]
+    [InlineData("f")]
+    [InlineData("uiop[]")]
+    [InlineData("ws;")]
     [InlineData("win11")]
     [InlineData("rtx4050")]
     public void Evaluate_ManualQaReferenceWords_AutoMode_DoesNotConvert(string word)
@@ -50,6 +65,7 @@ public class RealWorldHeuristicRegressionPackTests
 
     [Theory]
     [InlineData("docker")]
+    [InlineData("chrome")]
     [InlineData("build")]
     [InlineData("issue")]
     [InlineData("tools")]
@@ -92,6 +108,15 @@ public class RealWorldGuardRegressionPackTests
     public void GetUnsafeAutoCorrectionReason_ManualQaPlainEnglishShortToken_ReturnsReason()
     {
         string? reason = AutoContextGuards.GetUnsafeAutoCorrectionReason("hi", null, "telegram");
+        Assert.NotNull(reason);
+    }
+
+    [Theory]
+    [InlineData("\\asdfg", "chrome")]
+    [InlineData("/asdfg", "chrome")]
+    public void GetUnsafeAutoCorrectionReason_PathLikeBrowserTokens_ReturnsReason(string token, string processName)
+    {
+        string? reason = AutoContextGuards.GetUnsafeAutoCorrectionReason(token, null, processName);
         Assert.NotNull(reason);
     }
 }

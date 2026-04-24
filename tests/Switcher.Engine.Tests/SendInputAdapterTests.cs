@@ -198,6 +198,22 @@ public class KeyboardObserverBufferTests
     }
 
     [Fact]
+    public void PickBestEN_PrefersVkWhenChromeReportsSequentialScanNoise()
+    {
+        var buffer = new List<(uint scan, uint rawScan, uint vk, bool shift, uint flags)>
+        {
+            (0x02, 0x02, 0x47, false, 0), // scan says 1, vk says g
+            (0x03, 0x03, 0x48, false, 0), // scan says 2, vk says h
+            (0x04, 0x04, 0x42, false, 0), // scan says 3, vk says b
+            (0x05, 0x05, 0x44, false, 0), // scan says 4, vk says d
+            (0x06, 0x06, 0x53, false, 0), // scan says 5, vk says s
+            (0x07, 0x07, 0x4E, false, 0), // scan says 6, vk says n
+        };
+
+        Assert.Equal("ghbdsn", InvokePickBestEN(buffer));
+    }
+
+    [Fact]
     public void ScanBufferToDebug_ShowsOemVkCharacterInsteadOfQuestionMark()
     {
         var buffer = new List<(uint scan, uint rawScan, uint vk, bool shift, uint flags)>

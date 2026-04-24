@@ -18,6 +18,10 @@ out/
 .tmp/
 .venv/
 
+# Claude Code
+.claude/
+CLAUDE.md
+
 # NuGet
 packages/
 *.nupkg

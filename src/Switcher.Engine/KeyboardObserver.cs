@@ -453,6 +453,7 @@ public class KeyboardObserver : IDisposable
         if (vkEN.Length == 0 || scanEN == vkEN) return scanEN;
         bool vkLooksValid = vkEN.All(IsBufferedWordChar);
         bool scanLooksValid = scanEN.Length > 0 && scanEN.All(IsBufferedWordChar);
+        if (vkLooksValid && CountSequentialScans(buffer) >= 3) return vkEN;
         if (vkLooksValid && (!scanLooksValid || scanEN.Length < vkEN.Length)) return vkEN;
         return scanEN;
     }

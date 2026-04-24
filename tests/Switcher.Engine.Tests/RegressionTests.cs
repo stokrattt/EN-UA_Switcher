@@ -552,6 +552,25 @@ public class AutoModeHandlerPunctuationRegressionTests
     }
 
     [Fact]
+    public void BuildAutoReplacementInputs_UsesBackspaceUnicode_NotShiftSelection()
+    {
+        NativeMethods.INPUT[] inputs = InvokeBuildAutoReplacementInputs("ghbdsn", "привіт", string.Empty);
+
+        int backspaceDownCount = inputs.Count(input =>
+            input.U.ki.wVk == NativeMethods.VK_BACK
+            && input.U.ki.dwFlags == 0u);
+        bool hasShiftDown = inputs.Any(input =>
+            input.U.ki.wVk == NativeMethods.VK_SHIFT
+            && (input.U.ki.dwFlags & NativeMethods.KEYEVENTF_KEYUP) == 0);
+
+        Assert.Equal("ghbdsn".Length, backspaceDownCount);
+        Assert.False(hasShiftDown);
+        Assert.Contains(inputs, input =>
+            input.U.ki.wScan == 'п'
+            && (input.U.ki.dwFlags & NativeMethods.KEYEVENTF_UNICODE) != 0);
+    }
+
+    [Fact]
     public void BuildAutoReplacementInputs_WithTrailingPunctuation_MovesBeforeSuffixAndReturnsAfterTyping()
     {
         NativeMethods.INPUT[] inputs = InvokeBuildAutoReplacementInputs("ghbdsn", "привіт", "?");
@@ -768,6 +787,114 @@ public class AutoModeHandlerRegressionTests
         bool requiresLiveRuntimeRead = (bool)decision.GetType().GetProperty("RequiresLiveRuntimeRead")!.GetValue(decision)!;
 
         Assert.True(requiresLiveRuntimeRead);
+    }
+
+    [Fact]
+    public void BuildCandidateDecision_ChromeSequentialScanNoise_UsesVkFallbackCandidate()
+    {
+        var settings = new SettingsManager();
+        var handler = new AutoModeHandler(
+            new ForegroundContextProvider(),
+            new TextTargetCoordinator(Array.Empty<ITextTargetAdapter>()),
+            new ExclusionManager(settings),
+            new DiagnosticsLogger(),
+            settings,
+            new KeyboardObserver(settings));
+
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+
+        object snapshot = CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "EN",
+            liveWord: "",
+            visibleWord: "ghbdsn",
+            wordEn: "123456",
+            wordUa: "123456",
+            analysisWordEn: "123456",
+            analysisWordUa: "123456",
+            rawDebug: "1/g(s02/v47) 2/h(s03/v48) 3/b(s04/v42) 4/d(s05/v44) 5/s(s06/v53) 6/n(s07/v4E)",
+            originalDisplay: "123456",
+            techDetail: "keys=6 rec=0 drop=0 seq=5 lay=EN vkEn=ghbdsn vkUa=привіт",
+            approxWordLength: 6,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 5,
+            vkWordEn: "ghbdsn",
+            vkWordUa: "привіт");
+
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("BuildCandidateDecision", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        CandidateDecision decision = (CandidateDecision)method.Invoke(handler, [snapshot])!;
+
+        Assert.NotNull(decision.Candidate);
+        Assert.Equal(CandidateSource.VkFallback, decision.Source);
+        Assert.False(decision.RequiresLiveRuntimeRead);
+        Assert.Equal("ghbdsn", decision.Candidate!.OriginalText);
+        Assert.Equal("привіт", decision.Candidate.ConvertedText);
+    }
+
+    [Fact]
+    public void BuildCandidateDecision_ChromeSequentialScanNoiseWithPunctuation_UsesVkFallbackCandidate()
+    {
+        var settings = new SettingsManager();
+        var handler = new AutoModeHandler(
+            new ForegroundContextProvider(),
+            new TextTargetCoordinator(Array.Empty<ITextTargetAdapter>()),
+            new ExclusionManager(settings),
+            new DiagnosticsLogger(),
+            settings,
+            new KeyboardObserver(settings));
+
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+
+        object snapshot = CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "EN",
+            liveWord: "",
+            visibleWord: "ghbdsn;",
+            wordEn: "123456;",
+            wordUa: "123456;",
+            analysisWordEn: "123456",
+            analysisWordUa: "123456",
+            rawDebug: "1/g(s02/v47) 2/h(s03/v48) 3/b(s04/v42) 4/d(s05/v44) 5/s(s06/v53) 6/n(s07/v4E) ;/;(s27/vBA)",
+            originalDisplay: "123456;",
+            techDetail: "keys=7 rec=0 drop=0 seq=5 lay=EN vkEn=ghbdsn; vkUa=привіт;",
+            approxWordLength: 7,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 5,
+            vkWordEn: "ghbdsn;",
+            vkWordUa: "привіт;",
+            visibleTrailingSuffix: ";");
+
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("BuildCandidateDecision", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        CandidateDecision decision = (CandidateDecision)method.Invoke(handler, [snapshot])!;
+
+        Assert.NotNull(decision.Candidate);
+        Assert.Equal(CandidateSource.VkFallback, decision.Source);
+        Assert.Equal("ghbdsn;", decision.Candidate!.OriginalText);
+        Assert.Equal("привіт;", decision.Candidate.ConvertedText);
     }
 
     [Fact]
@@ -1056,7 +1183,7 @@ public class AutoModeHandlerRegressionTests
     }
 
     [Fact]
-    public void BuildAddressBarRoute_UsesValuePattern_WhenWritableValuePatternIsAvailable()
+    public void BuildAddressBarRoute_UsesFullTextRewrite_WhenWritableValuePatternIsAvailable()
     {
         var decision = new CandidateDecision(
             Candidate: null,
@@ -1069,14 +1196,14 @@ public class AutoModeHandlerRegressionTests
         object route = InvokeBuildAddressBarRoute(decision, hasWritableValuePattern: true);
         var values = ((System.Runtime.CompilerServices.ITuple)route);
 
-        Assert.Equal(ReplacementSafetyProfile.BrowserValuePatternSafe, values[0]);
-        Assert.Equal(ReplacementExecutionPath.BrowserValuePattern, values[1]);
-        Assert.Equal("UIAutomationTargetAdapter", values[2]);
-        Assert.Contains("browser-address-bar-value-pattern", Assert.IsType<string>(values[3]));
+        Assert.Equal(ReplacementSafetyProfile.BrowserBestEffort, values[0]);
+        Assert.Equal(ReplacementExecutionPath.BrowserAddressBarFullTextRewrite, values[1]);
+        Assert.Equal("AddressBarFullTextRewrite", values[2]);
+        Assert.Contains("browser-address-bar-full-text-rewrite", Assert.IsType<string>(values[3]));
     }
 
     [Fact]
-    public void BuildAddressBarRoute_UsesNativeSelection_WhenBufferedCandidateIsAvailableWithoutValuePattern()
+    public void BuildAddressBarRoute_UsesFullTextRewrite_WhenBufferedCandidateIsAvailableWithoutValuePattern()
     {
         var candidate = new CorrectionCandidate(
             "ghbdsn",
@@ -1095,14 +1222,15 @@ public class AutoModeHandlerRegressionTests
         object route = InvokeBuildAddressBarRoute(decision, hasWritableValuePattern: false);
         var values = ((System.Runtime.CompilerServices.ITuple)route);
 
-        Assert.Equal(ReplacementSafetyProfile.NativeSafe, values[0]);
-        Assert.Equal(ReplacementExecutionPath.NativeSelectionTransaction, values[1]);
-        Assert.Equal("SendInput", values[2]);
-        Assert.Contains("browser-address-bar-no-clipboard", Assert.IsType<string>(values[3]));
+        Assert.Equal(ReplacementSafetyProfile.BrowserBestEffort, values[0]);
+        Assert.Equal(ReplacementExecutionPath.BrowserAddressBarFullTextRewrite, values[1]);
+        Assert.Equal("AddressBarFullTextRewrite", values[2]);
+        Assert.NotEqual(ReplacementExecutionPath.ClipboardAssistedSelection, values[1]);
+        Assert.Contains("browser-address-bar-full-text-rewrite", Assert.IsType<string>(values[3]));
     }
 
     [Fact]
-    public void BuildAddressBarRoute_Skips_WhenNoWritableValuePatternAndLiveReadWouldBeRequired()
+    public void BuildAddressBarRoute_UsesFullTextRewrite_WhenNoWritableValuePatternAndLiveReadWouldBeRequired()
     {
         var decision = new CandidateDecision(
             Candidate: null,
@@ -1116,9 +1244,144 @@ public class AutoModeHandlerRegressionTests
         var values = ((System.Runtime.CompilerServices.ITuple)route);
 
         Assert.Equal(ReplacementSafetyProfile.BrowserBestEffort, values[0]);
-        Assert.Equal(ReplacementExecutionPath.ClipboardAssistedSelection, values[1]);
-        Assert.Equal("ClipboardSelectionTransaction", values[2]);
-        Assert.Contains("browser-address-bar-clipboard-fallback", Assert.IsType<string>(values[3]));
+        Assert.Equal(ReplacementExecutionPath.BrowserAddressBarFullTextRewrite, values[1]);
+        Assert.Equal("AddressBarFullTextRewrite", values[2]);
+        Assert.Contains("browser-address-bar-full-text-rewrite", Assert.IsType<string>(values[3]));
+    }
+
+    [Fact]
+    public void RewriteAddressBarText_ConvertsWholeMistypedPhrase()
+    {
+        string rewritten = InvokeRewriteAddressBarText("d wb[ ldj[ vscwz[", "chrome", out int count);
+
+        Assert.Equal("в цих двох місцях", rewritten);
+        Assert.Equal(4, count);
+    }
+
+    [Fact]
+    public void RewriteAddressBarText_ConvertsSingleMistypedWord()
+    {
+        string rewritten = InvokeRewriteAddressBarText("ghbdsn", "chrome", out int count);
+
+        Assert.Equal("привіт", rewritten);
+        Assert.Equal(1, count);
+    }
+
+    [Fact]
+    public void RewriteAddressBarText_LeavesPathLikeAndGarbageTokensUnchanged()
+    {
+        string rewritten = InvokeRewriteAddressBarText("\\asdfg uiop[] ws;", "chrome", out int count);
+
+        Assert.Equal("\\asdfg uiop[] ws;", rewritten);
+        Assert.Equal(0, count);
+    }
+
+    [Fact]
+    public void ClipboardLiveRead_DoesNotCompareCorruptedBufferBeforeReplace()
+    {
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "EN",
+            liveWord: "",
+            visibleWord: "ghbdsn",
+            wordEn: "yuiop[",
+            wordUa: "нгшщзх",
+            analysisWordEn: "yuiop[",
+            analysisWordUa: "нгшщзх",
+            rawDebug: "y/y(s15/v59) u/u(s16/v55) i/i(s17/v49) o/o(s18/v4F) p/p(s19/v50) [/[...]",
+            originalDisplay: "yuiop[",
+            techDetail: "keys=6 rec=0 drop=0 seq=3 lay=EN",
+            approxWordLength: 6,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 3);
+        var decision = new CandidateDecision(
+            Candidate: null,
+            Source: CandidateSource.None,
+            RequiresLiveRuntimeRead: true,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "needs live read");
+        var plan = new ReplacementPlan(
+            snapshot,
+            decision,
+            ReplacementSafetyProfile.BrowserBestEffort,
+            ReplacementExecutionPath.ClipboardAssistedSelection,
+            "ClipboardSelectionTransaction",
+            "browser-address-bar-live-clipboard-fallback");
+        var liveCandidate = new CorrectionCandidate(
+            "ghbdsn",
+            "привіт",
+            CorrectionDirection.EnToUa,
+            0.95,
+            "live clipboard");
+
+        Assert.Equal(string.Empty, InvokeGetClipboardPreconditionExpectedWord(plan));
+        Assert.Equal(string.Empty, InvokeGetClipboardBeforeReplaceExpectedWord(plan, liveCandidate));
+    }
+
+    [Fact]
+    public void ClipboardBufferedCandidate_StillComparesExpectedOriginalBeforeReplace()
+    {
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "EN",
+            liveWord: "",
+            visibleWord: "ghbdsn",
+            wordEn: "ghbdsn",
+            wordUa: "привіт",
+            analysisWordEn: "ghbdsn",
+            analysisWordUa: "привіт",
+            rawDebug: "test",
+            originalDisplay: "ghbdsn",
+            techDetail: "keys=6 rec=0 drop=0 seq=0 lay=EN",
+            approxWordLength: 6,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+        var candidate = new CorrectionCandidate(
+            "ghbdsn",
+            "привіт",
+            CorrectionDirection.EnToUa,
+            0.95,
+            "buffer");
+        var decision = new CandidateDecision(
+            candidate,
+            CandidateSource.PrimaryHeuristics,
+            RequiresLiveRuntimeRead: false,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "buffer candidate");
+        var plan = new ReplacementPlan(
+            snapshot,
+            decision,
+            ReplacementSafetyProfile.BrowserBestEffort,
+            ReplacementExecutionPath.ClipboardAssistedSelection,
+            "ClipboardSelectionTransaction",
+            "browser fallback");
+
+        Assert.Equal("ghbdsn", InvokeGetClipboardPreconditionExpectedWord(plan));
+        Assert.Equal("ghbdsn", InvokeGetClipboardBeforeReplaceExpectedWord(plan, candidate));
     }
 
     [Fact]
@@ -1161,14 +1424,27 @@ public class AutoModeHandlerRegressionTests
     }
 
     [Fact]
-    public void ClassifyReplacementSafetyProfile_UnsafeBrowserEditorSurface_SkipsAutoMode()
+    public void ClassifyReplacementSafetyProfile_UnsafeBrowserEditorSurface_UsesClipboardVerification()
     {
         MethodInfo method = typeof(AutoModeHandler)
             .GetMethod("ClassifyReplacementSafetyProfile", BindingFlags.NonPublic | BindingFlags.Static)!;
 
         object profile = method.Invoke(
             null,
-            [true, true, false, true])!;
+            [true, false, false, true])!;
+
+        Assert.Equal(ReplacementSafetyProfile.BrowserBestEffort, profile);
+    }
+
+    [Fact]
+    public void ClassifyReplacementSafetyProfile_UnsafeBrowserEditorSurface_SkipsInSafeOnlyMode()
+    {
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("ClassifyReplacementSafetyProfile", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        object profile = method.Invoke(
+            null,
+            [true, false, true, true])!;
 
         Assert.Equal(ReplacementSafetyProfile.UnsafeSkip, profile);
     }
@@ -1235,6 +1511,33 @@ public class AutoModeHandlerRegressionTests
         return (bool)method.Invoke(null, [decision])!;
     }
 
+    private static string InvokeGetClipboardPreconditionExpectedWord(ReplacementPlan plan)
+    {
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("GetClipboardPreconditionExpectedWord", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        return (string)method.Invoke(null, [plan])!;
+    }
+
+    private static string InvokeGetClipboardBeforeReplaceExpectedWord(ReplacementPlan plan, CorrectionCandidate candidate)
+    {
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("GetClipboardBeforeReplaceExpectedWord", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        return (string)method.Invoke(null, [plan, candidate])!;
+    }
+
+    private static string InvokeRewriteAddressBarText(string text, string? processName, out int replacementCount)
+    {
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("RewriteAddressBarText", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        object?[] args = [text, processName, 0];
+        string result = (string)method.Invoke(null, args)!;
+        replacementCount = (int)args[2]!;
+        return result;
+    }
+
     private static object CreateWordSnapshot(
         ForegroundContext context,
         string processName,
@@ -1253,7 +1556,10 @@ public class AutoModeHandlerRegressionTests
         int approxWordLength,
         int recoveryCount,
         int droppedKeyCount,
-        int sequentialScanCount)
+        int sequentialScanCount,
+        string? vkWordEn = null,
+        string? vkWordUa = null,
+        string visibleTrailingSuffix = "")
     {
         var engineAssembly = typeof(AutoModeHandler).Assembly;
         Type bufferQualityType = engineAssembly.GetType("Switcher.Engine.BufferQualitySnapshot", throwOnError: true)!;
@@ -1282,15 +1588,15 @@ public class AutoModeHandlerRegressionTests
                 (uint)0,
                 liveWord,
                 visibleWord,
-                string.Empty,
+                visibleTrailingSuffix,
                 wordEn,
                 wordUa,
-                wordEn,
-                wordUa,
+                vkWordEn ?? wordEn,
+                vkWordUa ?? wordUa,
                 analysisWordEn,
                 analysisWordUa,
-                analysisWordEn,
-                analysisWordUa,
+                vkWordEn ?? analysisWordEn,
+                vkWordUa ?? analysisWordUa,
                 rawDebug,
                 originalDisplay,
                 techDetail,

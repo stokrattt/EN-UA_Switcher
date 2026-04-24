@@ -336,11 +336,17 @@ public static class CorrectionHeuristics
             && word.All(char.IsLetter)
             && targetHasDistinctUkrainianLetter
             && targetScore >= 0.12;
+        bool allowShortKhEndingShape = mode == CorrectionMode.Auto
+            && !containsDigit
+            && !sourceDictionaryHit
+            && !targetDictionaryHit
+            && HasShortUkrainianKhEndingSignal(word, convertedLower, sourceScore, sourceZeroRatio, targetScore);
         if (!targetDictionaryHit
             && !containsDigit
             && targetZeroRatio > uaZeroThreshold
             && !allowBoundaryShortShape
             && !allowShortDistinctUaShape
+            && !allowShortKhEndingShape
             && !targetHasUkrainianMorphologySignal)
             return null;
 
@@ -410,6 +416,27 @@ public static class CorrectionHeuristics
                 mode,
                 sourceScore,
                 targetScore,
+                sourceDictionaryHit,
+                targetDictionaryHit);
+        }
+
+        if (allowShortKhEndingShape
+            && effectiveTargetScore >= 0.20
+            && confidence >= 0.16)
+        {
+            string fullShortKh = prefix + converted + suffix;
+            string fullOriginalShortKh = prefix + word + suffix;
+            return FinalizeCandidate(
+                fullOriginalShortKh,
+                fullShortKh,
+                word,
+                converted,
+                CorrectionDirection.EnToUa,
+                Math.Max(confidence, 0.48),
+                $"Latin→UA short-kh-ending src={sourceScore:F2} dst={effectiveTargetScore:F2}",
+                mode,
+                sourceScore,
+                effectiveTargetScore,
                 sourceDictionaryHit,
                 targetDictionaryHit);
         }
@@ -699,6 +726,15 @@ public static class CorrectionHeuristics
             || (tokenLength <= 4
                 && sourceScore >= 0.14
                 && ComputeVowelRatio(lower, englishLike: false) >= 0.25);
+        if (mode == CorrectionMode.Auto
+            && !containsDigit
+            && !sourceDictionaryHit
+            && sourceLooksPlausiblyUkrainian
+            && tokenLength <= 4
+            && IsProtectedTechnicalAcronym(convertedLower))
+        {
+            return null;
+        }
 
         // Algorithmic guard: if the converted result has many impossible EN bigrams,
         // it cannot be real English text — reject without needing a dictionary.
@@ -927,6 +963,18 @@ public static class CorrectionHeuristics
                 effectiveTargetScore,
                 sourceDictionaryHit,
                 targetLexicalHit);
+        }
+
+        if (mode == CorrectionMode.Auto
+            && !containsDigit
+            && !sourceDictionaryHit
+            && !targetDictionaryHit
+            && targetLooksLikeTechLatinWord
+            && !HasTechnicalMarker(convertedLower)
+            && sourceLooksPlausiblyUkrainian
+            && tokenLength <= 4)
+        {
+            return null;
         }
 
         if (mode == CorrectionMode.Auto
@@ -1618,6 +1666,28 @@ public static class CorrectionHeuristics
         !string.IsNullOrWhiteSpace(lower)
         && ProtectedShortLatinTokens.Contains(lower);
 
+    private static bool HasShortUkrainianKhEndingSignal(
+        string source,
+        string convertedLower,
+        double sourceScore,
+        double sourceZeroRatio,
+        double targetScore) =>
+        !string.IsNullOrWhiteSpace(source)
+        && convertedLower.Length is >= 3 and <= 4
+        && source.EndsWith("[", StringComparison.Ordinal)
+        && convertedLower.EndsWith('х')
+        && convertedLower.Any(c => UaVowels.Contains(c))
+        && sourceScore <= 0.08
+        && sourceZeroRatio >= 0.66
+        && targetScore >= 0.20;
+
+    private static bool IsProtectedTechnicalAcronym(string lower) =>
+        !string.IsNullOrWhiteSpace(lower)
+        && lower.Length is >= 2 and <= 5
+        && lower.All(char.IsLetter)
+        && !lower.Any(c => EnVowels.Contains(c))
+        && (IsLikelyEnglishToken(lower) || HasProtectedShortLatinToken(lower));
+
     private static readonly HashSet<string> EnglishBoundaryTrigrams = new(StringComparer.Ordinal)
     {
         "^re", "^co", "^de", "^in", "^be", "^st", "^sh", "^ch",
@@ -2119,7 +2189,9 @@ public static class CorrectionHeuristics
         || lower.Contains("sdk", StringComparison.Ordinal)
         || lower.Contains("json", StringComparison.Ordinal)
         || lower.Contains("yaml", StringComparison.Ordinal)
+        || lower.Contains("chrome", StringComparison.Ordinal)
         || lower.Contains("docker", StringComparison.Ordinal)
+        || lower.Contains("grep", StringComparison.Ordinal)
         || lower.Contains("git", StringComparison.Ordinal)
         || lower.Contains("vsc", StringComparison.Ordinal)
         || lower.Contains("nvidia", StringComparison.Ordinal);

@@ -17,6 +17,7 @@ internal enum ReplacementExecutionPath
     NativeSelectionTransaction,
     BrowserValuePattern,
     ClipboardAssistedSelection,
+    BrowserAddressBarFullTextRewrite,
     ElectronUiaBackspaceReplace,
     UnsafeSkip
 }
