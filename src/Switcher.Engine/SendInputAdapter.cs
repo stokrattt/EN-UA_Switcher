@@ -41,6 +41,11 @@ public class SendInputAdapter : ITextTargetAdapter
         "vivaldi",
     };
 
+    private static readonly HashSet<string> BrowserAddressBarClasses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Chrome_OmniboxView"
+    };
+
     private readonly KeyboardObserver _observer;
     private string? _lastSelectedText;
 
@@ -137,14 +142,24 @@ public class SendInputAdapter : ITextTargetAdapter
 
     private static bool ShouldUseWordSelectionReplace(ForegroundContext context)
     {
+        if (IsBrowserAddressBarContext(context))
+            return false;
+
+        if (ElectronProcessCatalog.IsElectronProcess(context.ProcessName))
+            return false;
+
         string cls = string.IsNullOrWhiteSpace(context.FocusedControlClass)
             ? context.WindowClass
             : context.FocusedControlClass;
 
         return WordSelectionClasses.Contains(cls)
-            || BrowserWordSelectionProcesses.Contains(context.ProcessName)
-            || ElectronProcessCatalog.IsElectronProcess(context.ProcessName);
+            || BrowserWordSelectionProcesses.Contains(context.ProcessName);
     }
+
+    private static bool IsBrowserAddressBarContext(ForegroundContext context) =>
+        BrowserWordSelectionProcesses.Contains(context.ProcessName)
+        && (BrowserAddressBarClasses.Contains(context.FocusedControlClass)
+            || context.FocusedControlClass.Contains("Omnibox", StringComparison.OrdinalIgnoreCase));
 
     private static NativeMethods.INPUT[] BuildBackspaceReplaceInputs(int backCount, string replacement)
     {

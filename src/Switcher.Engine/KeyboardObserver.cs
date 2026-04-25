@@ -51,6 +51,7 @@ public class KeyboardObserver : IDisposable
     private string _lastVkDebug = "";
     private int _scanRecoveryCount;
     private int _droppedKeySinceDelimiter;
+    private bool _wordEditedByBackspace;
 
     public KeyboardObserver(SettingsManager? settings = null)
     {
@@ -154,6 +155,7 @@ public class KeyboardObserver : IDisposable
         _scanBuffer.Clear();
         _scanRecoveryCount = 0;
         _droppedKeySinceDelimiter = 0;
+        _wordEditedByBackspace = false;
         _lastWordEN = "";
         _lastWordUA = "";
         _lastVisibleWord = "";
@@ -235,6 +237,14 @@ public class KeyboardObserver : IDisposable
 
                 if (IsDelimiterKey(vk))
                 {
+                    if (_wordEditedByBackspace && IsCancelOnBackspace)
+                    {
+                        ClearScanBuffer("Backspace-edited word cancel");
+                        _lastDelimiterVk = vk;
+                        _suppressDelimiter = false;
+                        return NativeMethods.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+                    }
+
                     int wordLen = _keysSinceDelimiter;
                     _keysSinceDelimiter = 0;
                     _lastWordEN = PickBestEN(_scanBuffer);
@@ -284,6 +294,7 @@ public class KeyboardObserver : IDisposable
                     else if (IsCancelOnBackspace)
                     {
                         ClearScanBuffer("Backspace cancel");
+                        _wordEditedByBackspace = true;
                         BufferReset?.Invoke();
                     }
                     else

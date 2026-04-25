@@ -240,6 +240,26 @@ public class KeyboardObserverBufferTests
     }
 
     [Fact]
+    public void BackspaceCancel_Enabled_SuppressesAutoCorrectionUntilNextDelimiter()
+    {
+        var settings = new SettingsManager();
+        settings.Current.CancelOnBackspace = true;
+
+        var obs = new KeyboardObserver(settings);
+        int boundaryCount = 0;
+        obs.WordBoundaryDetected += _ => boundaryCount++;
+        SeedBufferedWord(obs, "abc");
+
+        SimulateKeyDown(obs, NativeMethods.VK_BACK, 0x0E);
+        SimulateKeyDown(obs, 0x43, 0x2E); // c
+        SimulateKeyDown(obs, NativeMethods.VK_SPACE, 0x39);
+
+        Assert.Equal(0, boundaryCount);
+        Assert.Equal("", obs.GetVisibleWordNearCaret());
+        Assert.Equal(0, GetBufferedCount(obs));
+    }
+
+    [Fact]
     public void BackspaceCancel_Disabled_RemovesOnlyLastBufferedChar_BeforeDelimiter()
     {
         var settings = new SettingsManager();

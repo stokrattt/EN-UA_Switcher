@@ -32,6 +32,10 @@ public class RealWorldHeuristicRegressionPackTests
     [InlineData("wb[", "цих", CorrectionDirection.EnToUa)]
     [InlineData("ldj[", "двох", CorrectionDirection.EnToUa)]
     [InlineData("vscwz[", "місцях", CorrectionDirection.EnToUa)]
+    [InlineData("zrec", "якус", CorrectionDirection.EnToUa)]
+    [InlineData("vj]", "мої", CorrectionDirection.EnToUa)]
+    [InlineData("vjz", "моя", CorrectionDirection.EnToUa)]
+    [InlineData("hjpevs.", "розумію", CorrectionDirection.EnToUa)]
     public void Evaluate_ManualQaWords_AutoMode_Converts(string typed, string expected, CorrectionDirection direction)
     {
         var result = Evaluate(typed);
@@ -50,6 +54,8 @@ public class RealWorldHeuristicRegressionPackTests
     [InlineData("лефт")]
     [InlineData("шифт")]
     [InlineData("виділенням")]
+    [InlineData("впн")]
+    [InlineData("розумію")]
     [InlineData("оце")]
     [InlineData("jwt")]
     [InlineData("f")]
@@ -57,10 +63,18 @@ public class RealWorldHeuristicRegressionPackTests
     [InlineData("ws;")]
     [InlineData("win11")]
     [InlineData("rtx4050")]
+    [InlineData("zero")]
+    [InlineData("zebra")]
     public void Evaluate_ManualQaReferenceWords_AutoMode_DoesNotConvert(string word)
     {
         var result = Evaluate(word);
         Assert.Null(result);
+    }
+
+    [Fact]
+    public void LooksCorrectAsTyped_UkrainianAbbreviationVpn_ReturnsTrue()
+    {
+        Assert.True(CorrectionHeuristics.LooksCorrectAsTyped("впн"));
     }
 
     [Theory]

@@ -530,12 +530,64 @@ public class AutoModeHandlerPunctuationRegressionTests
         Assert.Equal("привіт,", normalized.ConvertedText);
     }
 
+    [Fact]
+    public void ResolveVisibleTrailingPunctuation_DoesNotTreatPeriodAsLiteral_WhenItCompletesLayoutWord()
+    {
+        string suffix = InvokeResolveVisibleTrailingPunctuation("hjpevs.", "розумію");
+
+        Assert.Equal(string.Empty, suffix);
+    }
+
+    [Fact]
+    public void ResolveVisibleTrailingPunctuation_TreatsPeriodAsLiteral_WhenCoreWordIsBetter()
+    {
+        string suffix = InvokeResolveVisibleTrailingPunctuation("ghbdsn.", "привітю");
+
+        Assert.Equal(".", suffix);
+    }
+
+    [Fact]
+    public void TryEvaluateVisibleTokenCandidate_ConvertsLayoutPeriodAsLetter()
+    {
+        CorrectionCandidate candidate = InvokeTryEvaluateVisibleTokenCandidate("hjpevs.");
+
+        Assert.Equal("hjpevs.", candidate.OriginalText);
+        Assert.Equal("розумію", candidate.ConvertedText);
+    }
+
+    [Fact]
+    public void TryEvaluateVisibleTokenCandidate_PreservesLiteralPeriod_WhenCoreWordIsBetter()
+    {
+        CorrectionCandidate candidate = InvokeTryEvaluateVisibleTokenCandidate("ghbdsn.");
+
+        Assert.Equal("ghbdsn.", candidate.OriginalText);
+        Assert.Equal("привіт.", candidate.ConvertedText);
+    }
+
     private static CorrectionCandidate InvokeApplyVisibleTrailingPunctuation(CorrectionCandidate candidate, string visibleSuffix)
     {
         var method = typeof(AutoModeHandler)
             .GetMethod("ApplyVisibleTrailingPunctuation", BindingFlags.NonPublic | BindingFlags.Static)!;
 
         return (CorrectionCandidate)method.Invoke(null, [candidate, visibleSuffix])!;
+    }
+
+    private static string InvokeResolveVisibleTrailingPunctuation(params string[] visibleWords)
+    {
+        var method = typeof(AutoModeHandler)
+            .GetMethod("ResolveVisibleTrailingPunctuation", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        return (string)method.Invoke(null, [visibleWords])!;
+    }
+
+    private static CorrectionCandidate InvokeTryEvaluateVisibleTokenCandidate(string token)
+    {
+        var method = typeof(AutoModeHandler)
+            .GetMethod("TryEvaluateVisibleTokenCandidate", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        var candidate = (CorrectionCandidate?)method.Invoke(null, [token]);
+        Assert.NotNull(candidate);
+        return candidate!;
     }
 
     [Fact]
@@ -696,7 +748,7 @@ public class SafeModeHandlerRegressionTests
         diagnostics.Configure(true);
         var settings = new SettingsManager();
         var exclusions = new ExclusionManager(settings);
-        var context = new ForegroundContext(IntPtr.Zero, IntPtr.Zero, "codex", 999, "Chrome_WidgetWin_1", "Chrome_RenderWidgetHostHWND");
+        var context = new ForegroundContext(IntPtr.Zero, IntPtr.Zero, "notepad", 999, "Notepad", "Edit");
 
         var first = new SafeModeStubAdapter("UIA", TargetSupport.Full) { LastWord = null };
         var second = new SafeModeStubAdapter("SendInput", TargetSupport.Full) { LastWord = "ghbdsn", ReplaceLastWordResult = true };
@@ -712,6 +764,54 @@ public class SafeModeHandlerRegressionTests
         Assert.Equal("привіт", entry.ConvertedText);
     }
 
+    [Fact]
+    public void FixLastWord_CaretSensitiveContext_UsesSendInputInsteadOfUiaSetValue()
+    {
+        var diagnostics = new DiagnosticsLogger();
+        diagnostics.Configure(true);
+        var settings = new SettingsManager();
+        var exclusions = new ExclusionManager(settings);
+        var context = new ForegroundContext(IntPtr.Zero, IntPtr.Zero, "element", 999, "Chrome_WidgetWin_1", "Chrome_RenderWidgetHostHWND");
+
+        var uia = new SafeModeStubAdapter("UIAutomationTargetAdapter", TargetSupport.Full) { LastWord = "ghbdsn", ReplaceLastWordResult = true };
+        var sendInput = new SafeModeStubAdapter("SendInputAdapter", TargetSupport.Full) { LastWord = "ghbdsn", ReplaceLastWordResult = true };
+        var coordinator = new TextTargetCoordinator(new ITextTargetAdapter[] { uia, sendInput });
+        var handler = new SafeModeHandler(() => context, coordinator, exclusions, diagnostics, settings);
+
+        handler.FixLastWord();
+
+        Assert.False(uia.TryGetLastWordCalled);
+        Assert.False(uia.TryReplaceLastWordCalled);
+        Assert.True(sendInput.TryReplaceLastWordCalled);
+        var entry = Assert.Single(diagnostics.GetEntries());
+        Assert.Equal("SendInputAdapter", entry.AdapterName);
+        Assert.Equal(DiagnosticResult.Replaced, entry.Result);
+        Assert.Equal("привіт", entry.ConvertedText);
+    }
+
+    [Fact]
+    public void FixLastWord_SkipsCorrectUkrainianWord()
+    {
+        var diagnostics = new DiagnosticsLogger();
+        diagnostics.Configure(true);
+        var settings = new SettingsManager();
+        var exclusions = new ExclusionManager(settings);
+        var context = new ForegroundContext(IntPtr.Zero, IntPtr.Zero, "notepad", 999, "Notepad", "Edit");
+
+        var adapter = new SafeModeStubAdapter("NativeEdit", TargetSupport.Full) { LastWord = "ти", ReplaceLastWordResult = true };
+        var coordinator = new TextTargetCoordinator(new ITextTargetAdapter[] { adapter });
+        var handler = new SafeModeHandler(() => context, coordinator, exclusions, diagnostics, settings);
+
+        handler.FixLastWord();
+
+        Assert.True(adapter.TryGetLastWordCalled);
+        Assert.False(adapter.TryReplaceLastWordCalled);
+        var entry = Assert.Single(diagnostics.GetEntries());
+        Assert.Equal(DiagnosticResult.Skipped, entry.Result);
+        Assert.Equal("ти", entry.OriginalText);
+        Assert.Contains("already looks correct", entry.Reason);
+    }
+
     private sealed class SafeModeStubAdapter(string name, TargetSupport support) : ITextTargetAdapter
     {
         public string AdapterName => name;
@@ -721,11 +821,16 @@ public class SafeModeHandlerRegressionTests
         public bool ReplaceLastWordResult { get; set; }
         public bool ReplaceSelectionResult { get; set; }
         public bool ReplaceCurrentSentenceResult { get; set; }
+        public bool TryGetLastWordCalled { get; private set; }
         public bool TryReplaceLastWordCalled { get; private set; }
 
         public TargetSupport CanHandle(ForegroundContext context) => support;
         public string DescribeSupport(ForegroundContext context) => support.ToString();
-        public string? TryGetLastWord(ForegroundContext context) => LastWord;
+        public string? TryGetLastWord(ForegroundContext context)
+        {
+            TryGetLastWordCalled = true;
+            return LastWord;
+        }
         public string? TryGetSelectedText(ForegroundContext context) => SelectedText;
         public string? TryGetCurrentSentence(ForegroundContext context) => CurrentSentence;
         public bool TryReplaceLastWord(ForegroundContext context, string replacement)
@@ -1139,6 +1244,40 @@ public class AutoModeHandlerRegressionTests
         Assert.False(canFallback);
     }
 
+    [Fact]
+    public void CanUseBufferedBrowserBackspace_AllowsBufferedCandidateForGoogleDocsLikeSurface()
+    {
+        var candidate = new CorrectionCandidate(
+            "руддщ",
+            "hello",
+            CorrectionDirection.UaToEn,
+            0.95,
+            "test");
+        var decision = new CandidateDecision(
+            candidate,
+            CandidateSource.PrimaryHeuristics,
+            RequiresLiveRuntimeRead: false,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "buffer candidate");
+
+        Assert.True(InvokeCanUseBufferedBrowserBackspace(decision));
+    }
+
+    [Fact]
+    public void CanUseBufferedBrowserBackspace_BlocksLiveOnlyDecision()
+    {
+        var decision = new CandidateDecision(
+            Candidate: null,
+            Source: CandidateSource.None,
+            RequiresLiveRuntimeRead: true,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "needs live read");
+
+        Assert.False(InvokeCanUseBufferedBrowserBackspace(decision));
+    }
+
     [Theory]
     [InlineData("chrome", "ControlType.Edit", "edit", "Chrome_OmniboxView", "", "")]
     [InlineData("msedge", "ControlType.Edit", "edit", "", "", "Address and search bar")]
@@ -1183,7 +1322,7 @@ public class AutoModeHandlerRegressionTests
     }
 
     [Fact]
-    public void BuildAddressBarRoute_UsesFullTextRewrite_WhenWritableValuePatternIsAvailable()
+    public void BuildAddressBarRoute_UsesLiveTokenBackspace_WhenLiveReadIsRequiredWithWritableValuePattern()
     {
         var decision = new CandidateDecision(
             Candidate: null,
@@ -1193,17 +1332,17 @@ public class AutoModeHandlerRegressionTests
             LearnedDecision: null,
             Reason: "needs live read");
 
-        object route = InvokeBuildAddressBarRoute(decision, hasWritableValuePattern: true);
+        object route = InvokeBuildAddressBarRoute(decision, hasWritableValuePattern: true, exactAddressBarSurface: true);
         var values = ((System.Runtime.CompilerServices.ITuple)route);
 
-        Assert.Equal(ReplacementSafetyProfile.BrowserBestEffort, values[0]);
-        Assert.Equal(ReplacementExecutionPath.BrowserAddressBarFullTextRewrite, values[1]);
-        Assert.Equal("AddressBarFullTextRewrite", values[2]);
-        Assert.Contains("browser-address-bar-full-text-rewrite", Assert.IsType<string>(values[3]));
+        Assert.Equal(ReplacementSafetyProfile.NativeSafe, values[0]);
+        Assert.Equal(ReplacementExecutionPath.BrowserAddressBarLiveTokenBackspace, values[1]);
+        Assert.Equal("AddressBarLiveToken", values[2]);
+        Assert.Contains("browser-address-bar-word-token", Assert.IsType<string>(values[3]));
     }
 
     [Fact]
-    public void BuildAddressBarRoute_UsesFullTextRewrite_WhenBufferedCandidateIsAvailableWithoutValuePattern()
+    public void BuildAddressBarRoute_UsesLiveTokenPath_WhenBufferedCandidateIsAvailable()
     {
         var candidate = new CorrectionCandidate(
             "ghbdsn",
@@ -1219,18 +1358,44 @@ public class AutoModeHandlerRegressionTests
             LearnedDecision: null,
             Reason: "buffer candidate");
 
-        object route = InvokeBuildAddressBarRoute(decision, hasWritableValuePattern: false);
+        object route = InvokeBuildAddressBarRoute(decision, hasWritableValuePattern: false, exactAddressBarSurface: false);
         var values = ((System.Runtime.CompilerServices.ITuple)route);
 
-        Assert.Equal(ReplacementSafetyProfile.BrowserBestEffort, values[0]);
-        Assert.Equal(ReplacementExecutionPath.BrowserAddressBarFullTextRewrite, values[1]);
-        Assert.Equal("AddressBarFullTextRewrite", values[2]);
+        Assert.Equal(ReplacementSafetyProfile.NativeSafe, values[0]);
+        Assert.Equal(ReplacementExecutionPath.BrowserAddressBarLiveTokenBackspace, values[1]);
+        Assert.Equal("AddressBarLiveToken", values[2]);
         Assert.NotEqual(ReplacementExecutionPath.ClipboardAssistedSelection, values[1]);
-        Assert.Contains("browser-address-bar-full-text-rewrite", Assert.IsType<string>(values[3]));
+        Assert.Contains("buffered-candidate-with-clipboard-verification", Assert.IsType<string>(values[3]));
     }
 
     [Fact]
-    public void BuildAddressBarRoute_UsesFullTextRewrite_WhenNoWritableValuePatternAndLiveReadWouldBeRequired()
+    public void BuildAddressBarRoute_UsesLiveToken_WhenValuePatternIsAvailableEvenWithBufferedCandidate()
+    {
+        var candidate = new CorrectionCandidate(
+            "vj]",
+            "мої",
+            CorrectionDirection.EnToUa,
+            0.95,
+            "test");
+        var decision = new CandidateDecision(
+            candidate,
+            CandidateSource.PrimaryHeuristics,
+            RequiresLiveRuntimeRead: false,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "buffer candidate");
+
+        object route = InvokeBuildAddressBarRoute(decision, hasWritableValuePattern: true, exactAddressBarSurface: false);
+        var values = ((System.Runtime.CompilerServices.ITuple)route);
+
+        Assert.Equal(ReplacementSafetyProfile.NativeSafe, values[0]);
+        Assert.Equal(ReplacementExecutionPath.BrowserAddressBarLiveTokenBackspace, values[1]);
+        Assert.Equal("AddressBarLiveToken", values[2]);
+        Assert.Contains("browser-address-bar-word-token", Assert.IsType<string>(values[3]));
+    }
+
+    [Fact]
+    public void BuildAddressBarRoute_AttemptsLiveToken_WhenSurfaceSnapshotMissesWritableValuePattern()
     {
         var decision = new CandidateDecision(
             Candidate: null,
@@ -1240,40 +1405,243 @@ public class AutoModeHandlerRegressionTests
             LearnedDecision: null,
             Reason: "needs live read");
 
-        object route = InvokeBuildAddressBarRoute(decision, hasWritableValuePattern: false);
+        object route = InvokeBuildAddressBarRoute(decision, hasWritableValuePattern: false, exactAddressBarSurface: false);
         var values = ((System.Runtime.CompilerServices.ITuple)route);
 
-        Assert.Equal(ReplacementSafetyProfile.BrowserBestEffort, values[0]);
-        Assert.Equal(ReplacementExecutionPath.BrowserAddressBarFullTextRewrite, values[1]);
-        Assert.Equal("AddressBarFullTextRewrite", values[2]);
-        Assert.Contains("browser-address-bar-full-text-rewrite", Assert.IsType<string>(values[3]));
+        Assert.Equal(ReplacementSafetyProfile.NativeSafe, values[0]);
+        Assert.Equal(ReplacementExecutionPath.BrowserAddressBarLiveTokenBackspace, values[1]);
+        Assert.Equal("AddressBarLiveToken", values[2]);
+        Assert.Contains("optimistic-after-uia-snapshot-miss", Assert.IsType<string>(values[3]));
     }
 
     [Fact]
-    public void RewriteAddressBarText_ConvertsWholeMistypedPhrase()
+    public void ShouldUseBrowserWordTokenRoute_ChromeLiveReadNoise_RoutesEvenWhenSurfaceSnapshotIsNotAddressBar()
     {
-        string rewritten = InvokeRewriteAddressBarText("d wb[ ldj[ vscwz[", "chrome", out int count);
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "UA",
+            liveWord: "",
+            visibleWord: "",
+            wordEn: "kengu",
+            wordUa: "лутпг",
+            analysisWordEn: "kengu",
+            analysisWordUa: "лутпг",
+            rawDebug: "chrome-scan-noise",
+            originalDisplay: "лутпг",
+            techDetail: "keys=5 rec=0 drop=0 seq=4 lay=UA",
+            approxWordLength: 5,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 4);
+        var decision = new CandidateDecision(
+            Candidate: null,
+            Source: CandidateSource.None,
+            RequiresLiveRuntimeRead: true,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "needs live read");
+        object surface = CreateBrowserSurfaceSnapshot(
+            hasWritableValuePattern: false,
+            className: "Chrome_RenderWidgetHostHWND",
+            elementName: "page document",
+            unsafeCustomEditorLike: true);
 
-        Assert.Equal("в цих двох місцях", rewritten);
-        Assert.Equal(4, count);
+        Assert.True(InvokeShouldUseBrowserWordTokenRoute(snapshot, decision, surface));
     }
 
     [Fact]
-    public void RewriteAddressBarText_ConvertsSingleMistypedWord()
+    public void ShouldUseBrowserWordTokenRoute_ChromeWithoutBufferedCandidate_RoutesEvenWithoutScanNoise()
     {
-        string rewritten = InvokeRewriteAddressBarText("ghbdsn", "chrome", out int count);
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "UA",
+            liveWord: "",
+            visibleWord: "",
+            wordEn: "kengu",
+            wordUa: "лутпг",
+            analysisWordEn: "kengu",
+            analysisWordUa: "лутпг",
+            rawDebug: "chrome-no-buffered-candidate",
+            originalDisplay: "лутпг",
+            techDetail: "keys=5 rec=0 drop=0 seq=0 lay=UA",
+            approxWordLength: 5,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+        var decision = new CandidateDecision(
+            Candidate: null,
+            Source: CandidateSource.None,
+            RequiresLiveRuntimeRead: false,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "no buffered candidate");
+        object surface = CreateBrowserSurfaceSnapshot(
+            hasWritableValuePattern: false,
+            className: "Chrome_RenderWidgetHostHWND",
+            elementName: "page document",
+            unsafeCustomEditorLike: true);
 
-        Assert.Equal("привіт", rewritten);
-        Assert.Equal(1, count);
+        Assert.True(InvokeShouldUseBrowserWordTokenRoute(snapshot, decision, surface));
     }
 
     [Fact]
-    public void RewriteAddressBarText_LeavesPathLikeAndGarbageTokensUnchanged()
+    public void ShouldUseBrowserWordTokenRoute_NonBrowser_DoesNotRouteUnknownSurface()
     {
-        string rewritten = InvokeRewriteAddressBarText("\\asdfg uiop[] ws;", "chrome", out int count);
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "notepad",
+            123,
+            "Edit",
+            "Edit");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "notepad",
+            controlClass: "Edit",
+            windowClass: "Edit",
+            layoutTag: "UA",
+            liveWord: "",
+            visibleWord: "",
+            wordEn: "kengu",
+            wordUa: "лутпг",
+            analysisWordEn: "kengu",
+            analysisWordUa: "лутпг",
+            rawDebug: "native-noise",
+            originalDisplay: "лутпг",
+            techDetail: "keys=5 rec=0 drop=0 seq=4 lay=UA",
+            approxWordLength: 5,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 4);
+        var decision = new CandidateDecision(
+            Candidate: null,
+            Source: CandidateSource.None,
+            RequiresLiveRuntimeRead: true,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "needs live read");
+        object surface = CreateBrowserSurfaceSnapshot(
+            hasWritableValuePattern: false,
+            className: "Edit",
+            elementName: "edit",
+            unsafeCustomEditorLike: false);
 
-        Assert.Equal("\\asdfg uiop[] ws;", rewritten);
-        Assert.Equal(0, count);
+        Assert.False(InvokeShouldUseBrowserWordTokenRoute(snapshot, decision, surface));
+    }
+
+    [Fact]
+    public void ShouldUseBrowserWordTokenRoute_TopChromeFocus_RoutesWithoutOldOmniboxHwnd()
+    {
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_WidgetWin_1");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_WidgetWin_1",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "UA",
+            liveWord: "",
+            visibleWord: "руддщ",
+            wordEn: "hello",
+            wordUa: "руддщ",
+            analysisWordEn: "hello",
+            analysisWordUa: "руддщ",
+            rawDebug: "top-chrome",
+            originalDisplay: "руддщ",
+            techDetail: "keys=5 rec=0 drop=0 seq=0 lay=UA",
+            approxWordLength: 5,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+        var decision = new CandidateDecision(
+            new CorrectionCandidate("руддщ", "hello", CorrectionDirection.UaToEn, 0.95, "buffer"),
+            CandidateSource.PrimaryHeuristics,
+            RequiresLiveRuntimeRead: false,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "buffer candidate");
+        object surface = CreateBrowserSurfaceSnapshot(
+            hasWritableValuePattern: false,
+            className: "Chrome_WidgetWin_1",
+            elementName: "",
+            unsafeCustomEditorLike: false);
+
+        Assert.True(InvokeShouldUseBrowserWordTokenRoute(snapshot, decision, surface));
+    }
+
+    [Fact]
+    public void TryBuildAddressBarLiveTokenCandidate_ConvertsLastMistypedWord()
+    {
+        object live = InvokeTryBuildAddressBarLiveTokenCandidate("ghbdsn ghbdsn", "chrome");
+        string original = Assert.IsType<string>(live.GetType().GetProperty("OriginalToken")!.GetValue(live));
+        var candidate = Assert.IsType<CorrectionCandidate>(live.GetType().GetProperty("Candidate")!.GetValue(live));
+
+        Assert.Equal("ghbdsn", original);
+        Assert.Equal("ghbdsn", candidate.OriginalText);
+        Assert.Equal("привіт", candidate.ConvertedText);
+    }
+
+    [Fact]
+    public void TryBuildAddressBarLiveTokenCandidate_OnlyUsesLastWordInPhrase()
+    {
+        object live = InvokeTryBuildAddressBarLiveTokenCandidate("ghbdsn руддщ", "chrome");
+        string original = Assert.IsType<string>(live.GetType().GetProperty("OriginalToken")!.GetValue(live));
+        var candidate = Assert.IsType<CorrectionCandidate>(live.GetType().GetProperty("Candidate")!.GetValue(live));
+
+        Assert.Equal("руддщ", original);
+        Assert.Equal("hello", candidate.ConvertedText);
+    }
+
+    [Fact]
+    public void TryBuildAddressBarLiveTokenCandidate_ConvertsCyrillicMistypedWord()
+    {
+        object live = InvokeTryBuildAddressBarLiveTokenCandidate("руддщ", "chrome");
+        string original = Assert.IsType<string>(live.GetType().GetProperty("OriginalToken")!.GetValue(live));
+        var candidate = Assert.IsType<CorrectionCandidate>(live.GetType().GetProperty("Candidate")!.GetValue(live));
+
+        Assert.Equal("руддщ", original);
+        Assert.Equal("hello", candidate.ConvertedText);
+    }
+
+    [Fact]
+    public void TryBuildAddressBarLiveTokenCandidate_UsesPeriodAsLayoutLetter_WhenItCompletesWord()
+    {
+        object live = InvokeTryBuildAddressBarLiveTokenCandidate("hjpevs.", "chrome");
+        var candidate = Assert.IsType<CorrectionCandidate>(live.GetType().GetProperty("Candidate")!.GetValue(live));
+
+        Assert.Equal("hjpevs.", candidate.OriginalText);
+        Assert.Equal("розумію", candidate.ConvertedText);
+    }
+
+    [Fact]
+    public void TryBuildAddressBarLiveTokenCandidate_SkipsCorrectUkrainianLastWord()
+    {
+        Assert.Null(InvokeTryBuildAddressBarLiveTokenCandidateOrNull("ghbdsn справи", "chrome"));
     }
 
     [Fact]
@@ -1385,6 +1753,163 @@ public class AutoModeHandlerRegressionTests
     }
 
     [Fact]
+    public void AddressBarBufferedBackspace_RequiresVisibleWordVerification()
+    {
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_OmniboxView");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_OmniboxView",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "EN",
+            liveWord: "",
+            visibleWord: "ghbdsn",
+            wordEn: "ghbdsn",
+            wordUa: "привіт",
+            analysisWordEn: "ghbdsn",
+            analysisWordUa: "привіт",
+            rawDebug: "test",
+            originalDisplay: "ghbdsn",
+            techDetail: "keys=6 rec=0 drop=0 seq=0 lay=EN",
+            approxWordLength: 6,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+        var candidate = new CorrectionCandidate(
+            "ghbdsn",
+            "привіт",
+            CorrectionDirection.EnToUa,
+            0.95,
+            "buffer");
+        var decision = new CandidateDecision(
+            candidate,
+            CandidateSource.PrimaryHeuristics,
+            RequiresLiveRuntimeRead: false,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "buffer candidate");
+        var plan = new ReplacementPlan(
+            snapshot,
+            decision,
+            ReplacementSafetyProfile.NativeSafe,
+            ReplacementExecutionPath.BrowserAddressBarBufferedBackspace,
+            "SendInput",
+            "browser address bar buffered");
+
+        Assert.True(InvokeShouldVerifyNativeVisibleWord(plan));
+    }
+
+    [Theory]
+    [InlineData(nameof(ReplacementExecutionPath.NativeSelectionTransaction))]
+    [InlineData(nameof(ReplacementExecutionPath.BrowserAddressBarBufferedBackspace))]
+    [InlineData(nameof(ReplacementExecutionPath.BrowserAddressBarLiveTokenBackspace))]
+    public void ShouldExecuteImmediately_BackspaceSendInputPaths_DoNotWaitForThreadPool(string pathName)
+    {
+        var path = Enum.Parse<ReplacementExecutionPath>(pathName);
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "EN",
+            liveWord: "",
+            visibleWord: "руддщ",
+            wordEn: "hello",
+            wordUa: "руддщ",
+            analysisWordEn: "hello",
+            analysisWordUa: "руддщ",
+            rawDebug: "test",
+            originalDisplay: "руддщ",
+            techDetail: "keys=5 rec=0 drop=0 seq=0 lay=UA",
+            approxWordLength: 5,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+        var candidate = new CorrectionCandidate(
+            "руддщ",
+            "hello",
+            CorrectionDirection.UaToEn,
+            0.95,
+            "buffer");
+        var decision = new CandidateDecision(
+            candidate,
+            CandidateSource.PrimaryHeuristics,
+            RequiresLiveRuntimeRead: false,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "buffer candidate");
+        var plan = new ReplacementPlan(
+            snapshot,
+            decision,
+            ReplacementSafetyProfile.NativeSafe,
+            path,
+            "SendInput",
+            "immediate path");
+
+        Assert.True(InvokeShouldExecuteImmediately(plan));
+    }
+
+    [Fact]
+    public void ShouldExecuteImmediately_ClipboardFallback_RemainsAsyncIfReenabled()
+    {
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "EN",
+            liveWord: "",
+            visibleWord: "",
+            wordEn: "",
+            wordUa: "",
+            analysisWordEn: "",
+            analysisWordUa: "",
+            rawDebug: "test",
+            originalDisplay: "",
+            techDetail: "keys=0 rec=0 drop=0 seq=0 lay=EN",
+            approxWordLength: 0,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+        var decision = new CandidateDecision(
+            Candidate: null,
+            Source: CandidateSource.None,
+            RequiresLiveRuntimeRead: true,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "needs live read");
+        var plan = new ReplacementPlan(
+            snapshot,
+            decision,
+            ReplacementSafetyProfile.BrowserBestEffort,
+            ReplacementExecutionPath.ClipboardAssistedSelection,
+            "ClipboardSelectionTransaction",
+            "legacy clipboard fallback");
+
+        Assert.False(InvokeShouldExecuteImmediately(plan));
+    }
+
+    [Fact]
     public void ResolveOriginalDisplay_PrefersLiveWord_WhenAvailable()
     {
         string original = InvokeResolveOriginalDisplay(
@@ -1424,7 +1949,7 @@ public class AutoModeHandlerRegressionTests
     }
 
     [Fact]
-    public void ClassifyReplacementSafetyProfile_UnsafeBrowserEditorSurface_UsesClipboardVerification()
+    public void ClassifyReplacementSafetyProfile_UnsafeBrowserEditorSurface_SkipsClipboardFallback()
     {
         MethodInfo method = typeof(AutoModeHandler)
             .GetMethod("ClassifyReplacementSafetyProfile", BindingFlags.NonPublic | BindingFlags.Static)!;
@@ -1433,7 +1958,7 @@ public class AutoModeHandlerRegressionTests
             null,
             [true, false, false, true])!;
 
-        Assert.Equal(ReplacementSafetyProfile.BrowserBestEffort, profile);
+        Assert.Equal(ReplacementSafetyProfile.UnsafeSkip, profile);
     }
 
     [Fact]
@@ -1482,12 +2007,57 @@ public class AutoModeHandlerRegressionTests
         return (NativeMethods.INPUT[])method.Invoke(null, new object[] { replacementText, restoreText })!;
     }
 
-    private static object InvokeBuildAddressBarRoute(CandidateDecision decision, bool hasWritableValuePattern)
+    private static object InvokeBuildAddressBarRoute(
+        CandidateDecision decision,
+        bool hasWritableValuePattern,
+        bool exactAddressBarSurface)
     {
         MethodInfo method = typeof(AutoModeHandler)
             .GetMethod("BuildAddressBarRoute", BindingFlags.NonPublic | BindingFlags.Static)!;
 
-        return method.Invoke(null, [decision, hasWritableValuePattern])!;
+        return method.Invoke(null, [decision, hasWritableValuePattern, exactAddressBarSurface])!;
+    }
+
+    private static bool InvokeShouldUseBrowserWordTokenRoute(
+        WordSnapshot snapshot,
+        CandidateDecision decision,
+        object surface)
+    {
+        Type surfaceType = typeof(AutoModeHandler).GetNestedType("BrowserSurfaceSnapshot", BindingFlags.NonPublic)!;
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod(
+                "ShouldUseBrowserWordTokenRoute",
+                BindingFlags.NonPublic | BindingFlags.Static,
+                [typeof(WordSnapshot), typeof(CandidateDecision), surfaceType])!;
+
+        return (bool)method.Invoke(null, [snapshot, decision, surface])!;
+    }
+
+    private static object CreateBrowserSurfaceSnapshot(
+        bool hasWritableValuePattern,
+        string className,
+        string elementName,
+        bool unsafeCustomEditorLike)
+    {
+        Type surfaceType = typeof(AutoModeHandler).GetNestedType("BrowserSurfaceSnapshot", BindingFlags.NonPublic)!;
+        return Activator.CreateInstance(
+            surfaceType,
+            BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public,
+            binder: null,
+            args:
+            [
+                true,
+                hasWritableValuePattern,
+                false,
+                "ControlType.Edit",
+                "edit",
+                className,
+                string.Empty,
+                elementName,
+                unsafeCustomEditorLike,
+                $"test-surface class={className} name={elementName}"
+            ],
+            culture: null)!;
     }
 
     private static string InvokeResolveOriginalDisplay(
@@ -1511,6 +2081,22 @@ public class AutoModeHandlerRegressionTests
         return (bool)method.Invoke(null, [decision])!;
     }
 
+    private static bool InvokeCanUseBufferedBrowserBackspace(CandidateDecision decision)
+    {
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("CanUseBufferedBrowserBackspace", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        return (bool)method.Invoke(null, [decision])!;
+    }
+
+    private static bool InvokeShouldExecuteImmediately(ReplacementPlan plan)
+    {
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("ShouldExecuteImmediately", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        return (bool)method.Invoke(null, [plan])!;
+    }
+
     private static string InvokeGetClipboardPreconditionExpectedWord(ReplacementPlan plan)
     {
         MethodInfo method = typeof(AutoModeHandler)
@@ -1527,15 +2113,27 @@ public class AutoModeHandlerRegressionTests
         return (string)method.Invoke(null, [plan, candidate])!;
     }
 
-    private static string InvokeRewriteAddressBarText(string text, string? processName, out int replacementCount)
+    private static bool InvokeShouldVerifyNativeVisibleWord(ReplacementPlan plan)
     {
         MethodInfo method = typeof(AutoModeHandler)
-            .GetMethod("RewriteAddressBarText", BindingFlags.NonPublic | BindingFlags.Static)!;
+            .GetMethod("ShouldVerifyNativeVisibleWord", BindingFlags.NonPublic | BindingFlags.Static)!;
 
-        object?[] args = [text, processName, 0];
-        string result = (string)method.Invoke(null, args)!;
-        replacementCount = (int)args[2]!;
+        return (bool)method.Invoke(null, [plan])!;
+    }
+
+    private static object InvokeTryBuildAddressBarLiveTokenCandidate(string text, string? processName)
+    {
+        object? result = InvokeTryBuildAddressBarLiveTokenCandidateOrNull(text, processName);
+        Assert.NotNull(result);
         return result;
+    }
+
+    private static object? InvokeTryBuildAddressBarLiveTokenCandidateOrNull(string text, string? processName)
+    {
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("TryBuildAddressBarLiveTokenCandidate", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        return method.Invoke(null, [text, processName]);
     }
 
     private static object CreateWordSnapshot(
@@ -1609,6 +2207,34 @@ public class AutoModeHandlerRegressionTests
 public class SendInputAdapterRegressionTests
 {
     [Fact]
+    public void ShouldUseWordSelectionReplace_DisabledForBrowserAddressBar()
+    {
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_OmniboxView");
+
+        Assert.False(InvokeShouldUseWordSelectionReplace(context));
+    }
+
+    [Fact]
+    public void ShouldUseWordSelectionReplace_DisabledForElectronApps()
+    {
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "element",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+
+        Assert.False(InvokeShouldUseWordSelectionReplace(context));
+    }
+
+    [Fact]
     public void BuildWordSelectionReplaceInputs_UsesExactShiftLeftSelection_NotCtrlWordJump()
     {
         var inputs = InvokeBuildWordSelectionReplaceInputs(3, "привіт");
@@ -1639,5 +2265,125 @@ public class SendInputAdapterRegressionTests
             .GetMethod("BuildWordSelectionReplaceInputs", BindingFlags.NonPublic | BindingFlags.Static)!;
 
         return (NativeMethods.INPUT[])method.Invoke(null, new object[] { selectionLength, replacement })!;
+    }
+
+    private static bool InvokeShouldUseWordSelectionReplace(ForegroundContext context)
+    {
+        MethodInfo method = typeof(SendInputAdapter)
+            .GetMethod("ShouldUseWordSelectionReplace", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        return (bool)method.Invoke(null, [context])!;
+    }
+}
+
+public class UIAutomationTargetAdapterRegressionTests
+{
+    [Theory]
+    [InlineData("chrome", "Chrome_OmniboxView", "", "")]
+    [InlineData("msedge", "", "", "Address and search bar")]
+    [InlineData("brave", "", "", "Адресний рядок")]
+    public void LooksLikeBrowserAddressBar_RecognizesBrowserAddressBars(
+        string processName,
+        string className,
+        string automationId,
+        string elementName)
+    {
+        Assert.True(InvokeLooksLikeBrowserAddressBar(processName, className, automationId, elementName));
+    }
+
+    [Theory]
+    [InlineData("chrome", "", "", "Comment")]
+    [InlineData("notepad", "Chrome_OmniboxView", "", "")]
+    public void LooksLikeBrowserAddressBar_DoesNotMatchNormalInputs(
+        string processName,
+        string className,
+        string automationId,
+        string elementName)
+    {
+        Assert.False(InvokeLooksLikeBrowserAddressBar(processName, className, automationId, elementName));
+    }
+
+    private static bool InvokeLooksLikeBrowserAddressBar(
+        string? processName,
+        string className,
+        string automationId,
+        string elementName)
+    {
+        MethodInfo method = typeof(UIAutomationTargetAdapter)
+            .GetMethod("LooksLikeBrowserAddressBar", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        return (bool)method.Invoke(null, [processName, className, automationId, elementName])!;
+    }
+}
+
+public class AutoModeHandlerGoogleDocsRegressionTests
+{
+    // ─── Positive: browser + Google Docs / Sheets / Slides title ────────────────
+
+    [Theory]
+    [InlineData("chrome",   "My doc - Google Docs - Google Chrome")]
+    [InlineData("msedge",   "Q4 numbers - Google Sheets - Microsoft\u00a0Edge")]
+    [InlineData("brave",    "All hands - Google Slides - Brave")]
+    [InlineData("opera",    "Something - Google Docs - Opera")]
+    [InlineData("vivaldi",  "Untitled document - Google Docs")]
+    [InlineData("CHROME",   "Document - Google Docs - Google Chrome")] // case-insensitive process
+    public void IsGoogleDocsTitle_RecognizesGoogleEditorsInChromiumBrowsers(string processName, string title)
+    {
+        Assert.True(AutoModeHandler.IsGoogleDocsTitle(processName, title),
+            $"Expected Google Docs surface for process='{processName}', title='{title}'.");
+    }
+
+    // ─── Positive: localized title markers ──────────────────────────────────────
+
+    [Theory]
+    [InlineData("chrome", "Мій документ - Google Документи - Google Chrome")]
+    [InlineData("chrome", "Звіт - Google Таблиці - Google Chrome")]
+    [InlineData("chrome", "Презентация - Google Презентации - Google Chrome")]
+    [InlineData("msedge", "Бюджет - Google Таблицы - Microsoft Edge")]
+    public void IsGoogleDocsTitle_RecognizesLocalizedTitles(string processName, string title)
+    {
+        Assert.True(AutoModeHandler.IsGoogleDocsTitle(processName, title),
+            $"Expected localized Google Docs surface for '{title}'.");
+    }
+
+    // ─── Negative: non-Google browser tab ───────────────────────────────────────
+
+    [Theory]
+    [InlineData("chrome", "Stack Overflow - How to fix bug - Google Chrome")]
+    [InlineData("chrome", "YouTube - Google Chrome")]
+    [InlineData("chrome", "GitHub - username/repo - Google Chrome")]
+    [InlineData("chrome", "google search results - Google Chrome")]
+    [InlineData("msedge", "Bing - Microsoft Edge")]
+    public void IsGoogleDocsTitle_DoesNotMatchNonGoogleTabs(string processName, string title)
+    {
+        Assert.False(AutoModeHandler.IsGoogleDocsTitle(processName, title),
+            $"Did not expect Google Docs surface for '{title}'.");
+    }
+
+    // ─── Negative: non-browser process with Docs-like title ─────────────────────
+
+    [Theory]
+    [InlineData("notepad",      "Google Docs — user notes")]
+    [InlineData("winword",      "Google Docs comparison.docx - Word")]
+    [InlineData("code",         "readme.md - Google Docs integration - Visual Studio Code")]
+    [InlineData("claude",       "Chat about Google Docs - Claude")]
+    public void IsGoogleDocsTitle_DoesNotMatchNonBrowserProcesses(string processName, string title)
+    {
+        Assert.False(AutoModeHandler.IsGoogleDocsTitle(processName, title),
+            $"Only Chromium browsers should route to Google Docs path. Got process='{processName}'.");
+    }
+
+    // ─── Negative: edge cases ───────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(null,    "Document - Google Docs")]
+    [InlineData("",      "Document - Google Docs")]
+    [InlineData("  ",    "Document - Google Docs")]
+    [InlineData("chrome", null)]
+    [InlineData("chrome", "")]
+    [InlineData("chrome", "   ")]
+    public void IsGoogleDocsTitle_HandlesNullAndEmptyInputsSafely(string? processName, string? title)
+    {
+        Assert.False(AutoModeHandler.IsGoogleDocsTitle(processName, title));
     }
 }

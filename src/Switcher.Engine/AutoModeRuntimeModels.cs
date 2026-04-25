@@ -15,9 +15,10 @@ internal enum ReplacementSafetyProfile
 internal enum ReplacementExecutionPath
 {
     NativeSelectionTransaction,
+    BrowserAddressBarBufferedBackspace,
+    BrowserAddressBarLiveTokenBackspace,
     BrowserValuePattern,
     ClipboardAssistedSelection,
-    BrowserAddressBarFullTextRewrite,
     ElectronUiaBackspaceReplace,
     UnsafeSkip
 }

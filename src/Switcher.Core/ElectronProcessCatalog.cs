@@ -17,6 +17,8 @@ public static class ElectronProcessCatalog
         "teams", "ms-teams", "msteams",
         "element", "element-desktop", "signal",
         "telegram", "telegram-desktop", "whatsapp", "skype",
+        // AI / Assistants
+        "claude",
         // Notes/Docs
         "obsidian", "notion", "logseq",
         // Social/Other

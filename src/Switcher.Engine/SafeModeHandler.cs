@@ -10,6 +10,11 @@ namespace Switcher.Engine;
 /// </summary>
 public class SafeModeHandler
 {
+    private static readonly HashSet<string> BrowserProcesses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "chrome", "msedge", "brave", "opera", "vivaldi"
+    };
+
     private readonly Func<ForegroundContext?> _getContext;
     private readonly TextTargetCoordinator _coordinator;
     private readonly ExclusionManager _exclusions;
@@ -93,6 +98,7 @@ public class SafeModeHandler
         bool sawReadOnly = false;
         string? lastFailureReason = null;
         string lastAdapterName = "none";
+        candidates = RestrictLastWordCandidatesForCaretSensitiveContext(context, candidates);
 
         foreach (var (adapter, support) in candidates)
         {
@@ -110,21 +116,22 @@ public class SafeModeHandler
                 continue;
             }
 
-            string converted = KeyboardLayoutMap.ToggleLayoutText(word, out int changedCount);
-            if (changedCount == 0 || string.Equals(converted, word, StringComparison.Ordinal))
+            CorrectionCandidate? candidate = CorrectionHeuristics.Evaluate(word, CorrectionMode.Safe);
+            if (candidate is null || string.Equals(candidate.ConvertedText, word, StringComparison.Ordinal))
             {
                 _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
                     adapter.AdapterName, true, opType, word, null,
-                    DiagnosticResult.Skipped, "No mappable EN/UA layout characters found");
+                    DiagnosticResult.Skipped, "Last word already looks correct or has no safe layout conversion");
                 return;
             }
 
+            string converted = candidate.ConvertedText;
             bool success = adapter.TryReplaceLastWord(context, converted);
             if (success)
             {
                 _diagnostics.Log(context.ProcessName, context.FocusedControlClass,
                     adapter.AdapterName, true, opType, word, converted,
-                    DiagnosticResult.Replaced, $"Layout toggle converted {changedCount} char(s)");
+                    DiagnosticResult.Replaced, candidate.Reason);
 
                 SwitchInputLanguageForConvertedText(context, converted);
                 return;
@@ -231,4 +238,31 @@ public class SafeModeHandler
             }
         }
     }
+
+    private static IReadOnlyList<(ITextTargetAdapter Adapter, TargetSupport Support)> RestrictLastWordCandidatesForCaretSensitiveContext(
+        ForegroundContext context,
+        IReadOnlyList<(ITextTargetAdapter Adapter, TargetSupport Support)> candidates)
+    {
+        if (!IsCaretSensitiveContext(context))
+            return candidates;
+
+        var sendInputCandidates = candidates
+            .Where(candidate => candidate.Support == TargetSupport.Full && IsSendInputAdapter(candidate.Adapter))
+            .ToArray();
+
+        return sendInputCandidates.Length > 0
+            ? sendInputCandidates
+            : candidates;
+    }
+
+    private static bool IsCaretSensitiveContext(ForegroundContext context) =>
+        BrowserProcesses.Contains(context.ProcessName)
+        || ElectronProcessCatalog.IsElectronProcess(context.ProcessName)
+        || string.Equals(context.WindowClass, "Chrome_WidgetWin_1", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(context.FocusedControlClass, "Chrome_RenderWidgetHostHWND", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSendInputAdapter(ITextTargetAdapter adapter) =>
+        adapter is SendInputAdapter
+        || string.Equals(adapter.AdapterName, "SendInputAdapter", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(adapter.AdapterName, "SendInput", StringComparison.OrdinalIgnoreCase);
 }

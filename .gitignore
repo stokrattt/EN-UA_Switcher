@@ -21,6 +21,10 @@ out/
 # Claude Code
 .claude/
 CLAUDE.md
+AGENTS.md
+
+# Local release note drafts
+release-notes*.md
 
 # NuGet
 packages/

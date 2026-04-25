@@ -34,6 +34,9 @@ public class ElectronProcessCatalogTests
     [InlineData("notion")]
     [InlineData("figma")]
     [InlineData("spotify")]
+    [InlineData("claude")]
+    [InlineData("Claude")]
+    [InlineData("CLAUDE")]
     public void IsElectronProcess_ReturnsTrue_ForKnownElectronApps(string processName)
     {
         Assert.True(ElectronProcessCatalog.IsElectronProcess(processName),
@@ -47,6 +50,7 @@ public class ElectronProcessCatalogTests
     [InlineData("Slack.EXE")]
     [InlineData("discord.exe")]
     [InlineData("TEAMS.EXE")]
+    [InlineData("Claude.exe")]
     public void IsElectronProcess_StripsExeSuffix(string processName)
     {
         Assert.True(ElectronProcessCatalog.IsElectronProcess(processName),
@@ -109,6 +113,7 @@ public class ElectronProcessCatalogTests
         Assert.Contains("discord", processes, StringComparer.OrdinalIgnoreCase);
         Assert.Contains("obsidian", processes, StringComparer.OrdinalIgnoreCase);
         Assert.Contains("teams", processes, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("claude", processes, StringComparer.OrdinalIgnoreCase);
     }
 
     [Fact]

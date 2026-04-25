@@ -23,6 +23,16 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
         "chrome", "msedge", "brave", "opera", "vivaldi"
     };
 
+    private static readonly string[] BrowserAddressBarNameMarkers =
+    [
+        "address and search bar",
+        "address bar",
+        "search or enter address",
+        "search with google or enter address",
+        "адресний рядок",
+        "адресная строка"
+    ];
+
     public string AdapterName => "UIAutomationTargetAdapter";
 
     // Cache: last UIA read, used by TryReplaceLastWord to replace the exact slice
@@ -66,6 +76,12 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
         {
             var element = AutomationElement.FocusedElement;
             if (element == null) return TargetSupport.Unsupported;
+            if (LooksLikeBrowserAddressBar(
+                    context.ProcessName,
+                    element.Current.ClassName ?? string.Empty,
+                    element.Current.AutomationId ?? string.Empty,
+                    element.Current.Name ?? string.Empty))
+                return TargetSupport.Unsupported;
 
             if (element.TryGetCurrentPattern(ValuePattern.Pattern, out object? vp))
             {
@@ -492,5 +508,25 @@ public class UIAutomationTargetAdapter : ITextTargetAdapter
         _lastReadValue = null;
         _lastWordStart = -1;
         _lastWordEnd = -1;
+    }
+
+    private static bool LooksLikeBrowserAddressBar(
+        string? processName,
+        string className,
+        string automationId,
+        string elementName)
+    {
+        if (string.IsNullOrWhiteSpace(processName)
+            || !BrowserProcesses.Contains(processName.Trim()))
+        {
+            return false;
+        }
+
+        string merged = $"{className} {automationId} {elementName}".ToLowerInvariant();
+        if (merged.Contains("omnibox", StringComparison.Ordinal))
+            return true;
+
+        string normalizedName = (elementName ?? string.Empty).Trim().ToLowerInvariant();
+        return BrowserAddressBarNameMarkers.Any(marker => string.Equals(normalizedName, marker, StringComparison.Ordinal));
     }
 }
