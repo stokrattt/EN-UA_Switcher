@@ -15,11 +15,11 @@
                 BorderThickness="0,0,0,1"
                 Padding="10,6">
             <StackPanel Orientation="Horizontal">
-                <Button Content="Clear" Style="{StaticResource SecondaryButtonStyle}"
+                <Button Content="Clear" Tag="Diagnostics.Clear" Style="{StaticResource SecondaryButtonStyle}"
                         Click="BtnClear_Click" Margin="0,0,6,0" />
-                <Button Content="Copy Selected" Style="{StaticResource SecondaryButtonStyle}"
+                <Button Content="Copy Selected" Tag="Diagnostics.CopySelected" Style="{StaticResource SecondaryButtonStyle}"
                         Click="BtnCopy_Click" Margin="0,0,6,0" />
-                <CheckBox x:Name="ChkAutoScroll" Content="Auto-scroll" IsChecked="True"
+                <CheckBox x:Name="ChkAutoScroll" Content="Auto-scroll" Tag="Diagnostics.AutoScroll" IsChecked="True"
                           VerticalAlignment="Center" Margin="8,0,0,0" />
                 <TextBlock Text="  |  " VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
                 <TextBlock x:Name="TxtEntryCount" VerticalAlignment="Center"
@@ -32,21 +32,21 @@
                   SelectionMode="Extended">
             <ListView.View>
                 <GridView>
-                    <GridViewColumn Header="Time"      Width="75"
+                    <GridViewColumn x:Name="ColTime" Header="Time"      Width="75"
                                     DisplayMemberBinding="{Binding TimestampStr}" />
-                    <GridViewColumn Header="Process"   Width="90"
+                    <GridViewColumn x:Name="ColProcess" Header="Process"   Width="90"
                                     DisplayMemberBinding="{Binding ProcessName}" />
-                    <GridViewColumn Header="Adapter"   Width="90"
+                    <GridViewColumn x:Name="ColAdapter" Header="Adapter"   Width="90"
                                     DisplayMemberBinding="{Binding ShortAdapter}" />
-                    <GridViewColumn Header="Operation" Width="90"
+                    <GridViewColumn x:Name="ColOperation" Header="Operation" Width="90"
                                     DisplayMemberBinding="{Binding Operation}" />
-                    <GridViewColumn Header="Original"  Width="200"
+                    <GridViewColumn x:Name="ColOriginal" Header="Original"  Width="200"
                                     DisplayMemberBinding="{Binding OriginalText}" />
-                    <GridViewColumn Header="Converted" Width="110"
+                    <GridViewColumn x:Name="ColConverted" Header="Converted" Width="110"
                                     DisplayMemberBinding="{Binding ConvertedText}" />
-                    <GridViewColumn Header="Result"    Width="80"
+                    <GridViewColumn x:Name="ColResult" Header="Result"    Width="80"
                                     DisplayMemberBinding="{Binding Result}" />
-                    <GridViewColumn Header="Reason"    Width="500"
+                    <GridViewColumn x:Name="ColReason" Header="Reason"    Width="500"
                                     DisplayMemberBinding="{Binding Reason}" />
                 </GridView>
             </ListView.View>

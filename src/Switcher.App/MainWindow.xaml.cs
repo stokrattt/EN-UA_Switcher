@@ -64,11 +64,13 @@ public partial class MainWindow : Window
                 ? File.GetLastWriteTime(entryAssembly.Location).ToString("yyyy-MM-dd")
                 : DateTime.Now.ToString("yyyy-MM-dd");
 
+            TxtAboutVersion.Tag = null;
             TxtAboutVersion.Text = $"{informationalVersion} - build {buildDate}";
         }
         catch
         {
-            TxtAboutVersion.Text = "Version unavailable";
+            TxtAboutVersion.Tag = "About.VersionUnavailable";
+            TxtAboutVersion.Text = AppLocalizer.T("About.VersionUnavailable", GetSelectedInterfaceLanguage());
         }
     }
 
@@ -77,9 +79,11 @@ public partial class MainWindow : Window
         _isLoadingState = true;
 
         var s = _engine.Settings.Current;
+        SelectInterfaceLanguage(s.InterfaceLanguage);
         ChkAutoMode.IsChecked = s.AutoModeEnabled;
         ChkSafeOnlyAutoMode.IsChecked = s.SafeOnlyAutoMode;
         ChkElectronUiaPath.IsChecked = s.ElectronUiaPathEnabled;
+        ChkDisableBrowserAddressBarAutoCorrection.IsChecked = s.DisableBrowserAddressBarAutoCorrection;
         ChkCorrectOnSpace.IsChecked = s.CorrectOnSpace;
         ChkCorrectOnEnter.IsChecked = s.CorrectOnEnter;
         ChkCorrectOnTab.IsChecked = s.CorrectOnTab;
@@ -106,6 +110,7 @@ public partial class MainWindow : Window
             _excludedWords.Add(word);
 
         RefreshRunningProcesses();
+        ApplyLocalization();
         UpdateStatusBar();
         _savedStateSnapshot = BuildPersistedStateSnapshot();
         _isLoadingState = false;
@@ -117,24 +122,36 @@ public partial class MainWindow : Window
         bool auto = _engine.Settings.Current.AutoModeEnabled;
         bool safeOnly = _engine.Settings.Current.SafeOnlyAutoMode;
         bool hotkeysReady = _engine.SafeHotkeysAvailable;
+        string language = GetSelectedInterfaceLanguage();
         string autoState = auto
-            ? (safeOnly ? "Auto Mode ON (safe-only)" : "Auto Mode ON (experimental broad)")
-            : "Auto Mode OFF";
+            ? (safeOnly
+                ? AppLocalizer.T("Status.AutoOnSafeOnly", language)
+                : AppLocalizer.T("Status.AutoOnBroad", language))
+            : AppLocalizer.T("Status.AutoOff", language);
         StatusText.Text = auto
-            ? (hotkeysReady ? $"Engine running — {autoState}, hotkeys ON" : $"Engine running — {autoState}, hotkeys unavailable")
-            : (hotkeysReady ? "Engine running — Auto Mode OFF, hotkeys ON" : "Engine running — Auto Mode OFF, hotkeys unavailable");
+            ? (hotkeysReady
+                ? AppLocalizer.Format("Status.RunningHotkeysOn", language, autoState)
+                : AppLocalizer.Format("Status.RunningHotkeysUnavailable", language, autoState))
+            : (hotkeysReady
+                ? AppLocalizer.Format("Status.RunningHotkeysOn", language, autoState)
+                : AppLocalizer.Format("Status.RunningHotkeysUnavailable", language, autoState));
 
         TxtHotkeyStatus.Text = hotkeysReady
-            ? "Hotkeys status: active globally. They do not depend on Auto Mode."
-            : $"Hotkeys status: unavailable. {_engine.SafeHotkeysError ?? "Registration failed."}";
+            ? AppLocalizer.T("Hotkeys.StatusActive", language)
+            : AppLocalizer.Format(
+                "Hotkeys.StatusUnavailable",
+                language,
+                _engine.SafeHotkeysError ?? AppLocalizer.T("Hotkeys.RegistrationFailed", language));
     }
 
     private void SaveCurrentState()
     {
         var s = _engine.Settings.Current;
+        s.InterfaceLanguage = GetSelectedInterfaceLanguage();
         s.AutoModeEnabled = ChkAutoMode.IsChecked == true;
         s.SafeOnlyAutoMode = ChkSafeOnlyAutoMode.IsChecked == true;
         s.ElectronUiaPathEnabled = ChkElectronUiaPath.IsChecked == true;
+        s.DisableBrowserAddressBarAutoCorrection = ChkDisableBrowserAddressBarAutoCorrection.IsChecked == true;
         s.CorrectOnSpace = ChkCorrectOnSpace.IsChecked == true;
         s.CorrectOnEnter = ChkCorrectOnEnter.IsChecked == true;
         s.CorrectOnTab = ChkCorrectOnTab.IsChecked == true;
@@ -151,6 +168,7 @@ public partial class MainWindow : Window
         s.SafeLastWordHotkey = _capturedLastWordHotkey;
         s.SafeSelectionHotkey = _capturedSelectionHotkey;
         _engine.ApplySettings();
+        ApplyLocalization();
         UpdateStatusBar();
         _savedStateSnapshot = BuildPersistedStateSnapshot();
         UpdateDirtyState();
@@ -159,6 +177,28 @@ public partial class MainWindow : Window
     private void BtnSave_Click(object sender, RoutedEventArgs e)
     {
         SaveCurrentState();
+    }
+
+    private void CmbInterfaceLanguage_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isLoadingState)
+            return;
+
+        ApplyLocalization();
+        UpdateDirtyState();
+    }
+
+    private void BtnChangeLastWordHotkey_Click(object sender, RoutedEventArgs e) =>
+        FocusHotkeyEditor(TxtLastWordHotkey);
+
+    private void BtnChangeSelectionHotkey_Click(object sender, RoutedEventArgs e) =>
+        FocusHotkeyEditor(TxtSelectionHotkey);
+
+    private static void FocusHotkeyEditor(System.Windows.Controls.TextBox textBox)
+    {
+        textBox.Focus();
+        Keyboard.Focus(textBox);
+        textBox.SelectAll();
     }
 
     private void TxtHotkey_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
@@ -461,6 +501,7 @@ public partial class MainWindow : Window
             ChkAutoMode,
             ChkSafeOnlyAutoMode,
             ChkElectronUiaPath,
+            ChkDisableBrowserAddressBarAutoCorrection,
             ChkCorrectOnSpace,
             ChkCorrectOnEnter,
             ChkCorrectOnTab,
@@ -487,6 +528,7 @@ public partial class MainWindow : Window
         bool autoEnabled = ChkAutoMode.IsChecked == true;
         ChkSafeOnlyAutoMode.IsEnabled = autoEnabled;
         ChkElectronUiaPath.IsEnabled = autoEnabled;
+        ChkDisableBrowserAddressBarAutoCorrection.IsEnabled = autoEnabled;
     }
 
     private void PersistedStateControlChanged(object sender, RoutedEventArgs e)
@@ -506,15 +548,18 @@ public partial class MainWindow : Window
 
         bool isDirty = !string.Equals(BuildPersistedStateSnapshot(), _savedStateSnapshot, StringComparison.Ordinal);
         BtnSave.IsEnabled = isDirty;
-        BtnSave.Content = isDirty ? "Save" : "Saved";
+        BtnSave.Tag = isDirty ? "Action.Save" : "Action.Saved";
+        BtnSave.Content = AppLocalizer.T(isDirty ? "Action.Save" : "Action.Saved", GetSelectedInterfaceLanguage());
     }
 
     private string BuildPersistedStateSnapshot()
     {
         var builder = new StringBuilder(256);
+        builder.Append(GetSelectedInterfaceLanguage()).Append('|');
         builder.Append(ChkAutoMode.IsChecked == true).Append('|');
         builder.Append(ChkSafeOnlyAutoMode.IsChecked == true).Append('|');
         builder.Append(ChkElectronUiaPath.IsChecked == true).Append('|');
+        builder.Append(ChkDisableBrowserAddressBarAutoCorrection.IsChecked == true).Append('|');
         builder.Append(ChkCorrectOnSpace.IsChecked == true).Append('|');
         builder.Append(ChkCorrectOnEnter.IsChecked == true).Append('|');
         builder.Append(ChkCorrectOnTab.IsChecked == true).Append('|');
@@ -531,5 +576,37 @@ public partial class MainWindow : Window
         builder.Append(_capturedLastWordHotkey.FriendlyName).Append('|');
         builder.Append(_capturedSelectionHotkey.FriendlyName);
         return builder.ToString();
+    }
+
+    private void ApplyLocalization()
+    {
+        string language = GetSelectedInterfaceLanguage();
+        AppLocalizer.Apply(this, language);
+        Title = AppLocalizer.T("Window.SettingsTitle", language);
+        UpdateStatusBar();
+        UpdateDirtyState();
+    }
+
+    private string GetSelectedInterfaceLanguage()
+    {
+        if (CmbInterfaceLanguage.SelectedValue is string selected)
+            return AppLocalizer.NormalizeConfiguredLanguage(selected);
+
+        return AppLocalizer.Auto;
+    }
+
+    private void SelectInterfaceLanguage(string? language)
+    {
+        string normalized = AppLocalizer.NormalizeConfiguredLanguage(language);
+        foreach (var item in CmbInterfaceLanguage.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag as string, normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                CmbInterfaceLanguage.SelectedItem = item;
+                return;
+            }
+        }
+
+        CmbInterfaceLanguage.SelectedIndex = 0;
     }
 }

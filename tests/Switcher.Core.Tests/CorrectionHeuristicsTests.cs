@@ -679,6 +679,16 @@ public class CorrectionHeuristicsTests
     }
 
     [Fact]
+    public void Evaluate_CommonUkrainianPreposition_AutoMode_Converts()
+    {
+        var result = Evaluate("lkz", CorrectionMode.Auto);
+
+        Assert.NotNull(result);
+        Assert.Equal(CorrectionDirection.EnToUa, result!.Direction);
+        Assert.Equal("для", result.ConvertedText);
+    }
+
+    [Fact]
     public void Evaluate_KnownUkrainianWordGrupu_AutoMode_Skips()
     {
         var result = Evaluate("групу", CorrectionMode.Auto);
@@ -793,6 +803,18 @@ public class CorrectionHeuristicsTests
     public void Evaluate_AlreadyCorrectWordOrProtectedToken_AutoMode_Skips(string word)
     {
         var result = Evaluate(word, CorrectionMode.Auto);
+        Assert.Null(result);
+    }
+
+    [Theory]
+    [InlineData("штук")]
+    [InlineData("Штук")]
+    [InlineData("штук,")]
+    [InlineData("Штук.")]
+    public void Evaluate_KnownUkrainianWordShtuk_AutoMode_Skips(string word)
+    {
+        var result = Evaluate(word, CorrectionMode.Auto);
+
         Assert.Null(result);
     }
 

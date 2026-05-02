@@ -26,6 +26,7 @@
                 Margin="0,0,0,10">
             <DockPanel LastChildFill="False">
                 <TextBlock Text="EN-UA Switcher"
+                           Tag="App.Name"
                            Style="{StaticResource WindowTitleStyle}"
                            VerticalAlignment="Center" />
                 <Border Style="{StaticResource PillBorderStyle}"
@@ -51,105 +52,146 @@
                         Background="Transparent"
                         BorderThickness="0">
 
-                <TabItem Header="General">
+                <TabItem Header="General" Tag="Tab.General">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="2,10,2,0">
                             <Border Style="{StaticResource SubtleCardBorderStyle}">
                                 <StackPanel>
-                                    <TextBlock Text="AUTOMATION" Style="{StaticResource EyebrowTextStyle}" />
-                                    <TextBlock Text="General" Style="{StaticResource SectionHeaderStyle}" />
+                                    <TextBlock Text="AUTOMATION" Tag="Settings.AutomationEyebrow" Style="{StaticResource EyebrowTextStyle}" />
+                                    <TextBlock Text="General" Tag="Settings.GeneralHeader" Style="{StaticResource SectionHeaderStyle}" />
                                     <TextBlock Style="{StaticResource MutedTextStyle}"
+                                               Tag="Settings.GeneralDescription"
                                                Text="Choose how EN-UA Switcher reacts while you type. Safe hotkeys remain available even with Auto Mode disabled."
                                                Margin="0,0,0,8" />
 
                                     <CheckBox x:Name="ChkAutoMode"
-                                              ToolTip="Auto Mode only controls automatic corrections while typing. Safe-mode hotkeys work independently.">
+                                              ToolTip="Tooltip.Settings.EnableAutoMode">
                                         <TextBlock Text="Enable Auto Mode (automatic correction after Space / Enter / Tab)"
+                                                   Tag="Settings.EnableAutoMode"
                                                    TextWrapping="Wrap" />
                                     </CheckBox>
                                     <CheckBox x:Name="ChkSafeOnlyAutoMode"
                                               Margin="0,6,0,0"
-                                              ToolTip="Use only exact-slice safe replacement paths. Browser best-effort auto-replace is skipped.">
+                                              ToolTip="Tooltip.Settings.SafeOnlyAutoMode">
                                         <TextBlock Text="Safe-only browser auto-replace (requires Auto Mode)"
+                                                   Tag="Settings.SafeOnlyAutoMode"
                                                    TextWrapping="Wrap" />
                                     </CheckBox>
                                     <CheckBox x:Name="ChkElectronUiaPath"
                                               Margin="0,6,0,0"
-                                              ToolTip="Use Backspace+Unicode replacement in Electron apps (VS Code, Slack, Discord, etc.) instead of Shift+Left selection. Avoids race conditions but is experimental.">
+                                              ToolTip="Tooltip.Settings.ElectronUiaPath">
                                         <TextBlock Text="Electron app path: UIA read + Backspace replace (requires Auto Mode)"
+                                                   Tag="Settings.ElectronUiaPath"
+                                                   TextWrapping="Wrap" />
+                                    </CheckBox>
+                                    <CheckBox x:Name="ChkDisableBrowserAddressBarAutoCorrection"
+                                              Margin="0,6,0,0"
+                                              ToolTip="Tooltip.Settings.AddressBarSkip">
+                                        <TextBlock Text="Skip Auto Mode in browser address bars"
+                                                   Tag="Settings.AddressBarSkip"
                                                    TextWrapping="Wrap" />
                                     </CheckBox>
 
                                     <Separator />
 
-                                    <TextBlock Text="Delimiter keys" Style="{StaticResource SectionHeaderStyle}" />
+                                    <TextBlock Text="Delimiter keys" Tag="Settings.DelimiterKeys" Style="{StaticResource SectionHeaderStyle}" />
                                     <TextBlock Style="{StaticResource MutedTextStyle}"
+                                               Tag="Settings.DelimiterDescription"
                                                Text="Choose which keys trigger auto-correction after a word."
                                                Margin="0,0,0,8" />
                                     <CheckBox x:Name="ChkCorrectOnSpace"
                                               Content="Correct on Space"
-                                              ToolTip="Trigger auto-correction when Space is pressed." />
+                                              Tag="Settings.CorrectOnSpace"
+                                              ToolTip="Tooltip.Settings.CorrectOnSpace" />
                                     <CheckBox x:Name="ChkCorrectOnEnter"
                                               Content="Correct on Enter"
-                                              ToolTip="Trigger auto-correction when Enter is pressed." />
+                                              Tag="Settings.CorrectOnEnter"
+                                              ToolTip="Tooltip.Settings.CorrectOnEnter" />
                                     <CheckBox x:Name="ChkCorrectOnTab"
                                               Content="Correct on Tab"
-                                              ToolTip="Trigger auto-correction when Tab is pressed." />
+                                              Tag="Settings.CorrectOnTab"
+                                              ToolTip="Tooltip.Settings.CorrectOnTab" />
                                 </StackPanel>
                             </Border>
 
                             <Border Style="{StaticResource SubtleCardBorderStyle}">
                                 <StackPanel>
-                                    <TextBlock Text="CONTROL" Style="{StaticResource EyebrowTextStyle}" />
-                                    <TextBlock Text="Cancel and undo" Style="{StaticResource SectionHeaderStyle}" />
+                                    <TextBlock Text="CONTROL" Tag="Settings.ControlEyebrow" Style="{StaticResource EyebrowTextStyle}" />
+                                    <TextBlock Text="Cancel and undo" Tag="Settings.CancelUndoHeader" Style="{StaticResource SectionHeaderStyle}" />
                                     <TextBlock Style="{StaticResource MutedTextStyle}"
+                                               Tag="Settings.CancelUndoDescription"
                                                Text="These options protect the current word buffer and let you roll back an accidental auto-correction."
                                                Margin="0,0,0,8" />
 
                                     <CheckBox x:Name="ChkCancelOnBackspace"
-                                              ToolTip="Pressing Backspace clears the word buffer — no correction will happen.">
-                                        <TextBlock Text="Cancel on Backspace" TextWrapping="Wrap" />
+                                              ToolTip="Tooltip.Settings.CancelOnBackspace">
+                                        <TextBlock Text="Cancel on Backspace" Tag="Settings.CancelOnBackspace" TextWrapping="Wrap" />
                                     </CheckBox>
                                     <CheckBox x:Name="ChkCancelOnLeftArrow"
-                                              ToolTip="Pressing Left Arrow clears the word buffer — no correction will happen.">
-                                        <TextBlock Text="Cancel on Left Arrow" TextWrapping="Wrap" />
+                                              ToolTip="Tooltip.Settings.CancelOnLeftArrow">
+                                        <TextBlock Text="Cancel on Left Arrow" Tag="Settings.CancelOnLeftArrow" TextWrapping="Wrap" />
                                     </CheckBox>
                                     <CheckBox x:Name="ChkUndoOnBackspace"
-                                              ToolTip="Press Backspace immediately after an auto-correction to revert it.">
-                                        <TextBlock Text="Undo correction on Backspace" TextWrapping="Wrap" />
+                                              ToolTip="Tooltip.Settings.UndoOnBackspace">
+                                        <TextBlock Text="Undo correction on Backspace" Tag="Settings.UndoOnBackspace" TextWrapping="Wrap" />
                                     </CheckBox>
                                 </StackPanel>
                             </Border>
 
                             <Border Style="{StaticResource SubtleCardBorderStyle}">
                                 <StackPanel>
-                                    <TextBlock Text="APP" Style="{StaticResource EyebrowTextStyle}" />
-                                    <TextBlock Text="Startup and diagnostics" Style="{StaticResource SectionHeaderStyle}" />
+                                    <TextBlock Text="APP" Tag="Settings.AppEyebrow" Style="{StaticResource EyebrowTextStyle}" />
+                                    <TextBlock Text="Startup and diagnostics" Tag="Settings.StartupDiagnosticsHeader" Style="{StaticResource SectionHeaderStyle}" />
                                     <TextBlock Style="{StaticResource MutedTextStyle}"
+                                               Tag="Settings.StartupDiagnosticsDescription"
                                                Text="A few practical toggles for startup behavior and troubleshooting."
                                                Margin="0,0,0,8" />
 
+                                    <TextBlock Text="Interface language"
+                                               Tag="Settings.InterfaceLanguageHeader"
+                                               Style="{StaticResource SectionHeaderStyle}" />
+                                    <TextBlock Style="{StaticResource MutedTextStyle}"
+                                               Tag="Settings.InterfaceLanguageDescription"
+                                               Text="Auto follows the Windows display language; manual choices are saved."
+                                               Margin="0,0,0,8" />
+                                    <ComboBox x:Name="CmbInterfaceLanguage"
+                                              Width="220"
+                                              HorizontalAlignment="Left"
+                                              SelectedValuePath="Tag"
+                                              SelectionChanged="CmbInterfaceLanguage_SelectionChanged"
+                                              Margin="0,0,0,12">
+                                        <ComboBoxItem Tag="Auto" Content="Auto" />
+                                        <ComboBoxItem Tag="uk" Content="Українська" />
+                                        <ComboBoxItem Tag="en" Content="English" />
+                                    </ComboBox>
+
                                     <CheckBox x:Name="ChkRunAtStartup"
                                               Content="Run at Windows startup"
-                                              ToolTip="Automatically start EN-UA Switcher when you log in to Windows." />
+                                              Tag="Settings.RunAtStartup"
+                                              ToolTip="Tooltip.Settings.RunAtStartup" />
                                     <CheckBox x:Name="ChkStartMinimized"
-                                              Content="Start minimized to system tray" />
+                                              Content="Start minimized to system tray"
+                                              Tag="Settings.StartMinimized" />
                                     <CheckBox x:Name="ChkDiagnostics"
-                                              Content="Enable diagnostics logging" />
+                                              Content="Enable diagnostics logging"
+                                              Tag="Settings.Diagnostics" />
                                     <CheckBox x:Name="ChkSelectorDiagnosticsExport"
                                               Margin="0,6,0,0"
-                                              ToolTip="Writes opt-in structured selector examples for ML analysis to a separate export file.">
+                                              ToolTip="Tooltip.Settings.SelectorExport">
                                         <TextBlock Text="Export structured selector examples (opt-in ML diagnostics)"
+                                                   Tag="Settings.SelectorExport"
                                                    TextWrapping="Wrap" />
                                     </CheckBox>
                                     <CheckBox x:Name="ChkLearnedSelectorGate"
                                               Margin="0,6,0,0"
-                                              ToolTip="Keeps heuristics as the primary generator and lets the learned selector reject only low-confidence borderline candidates.">
+                                              ToolTip="Tooltip.Settings.LearnedSelectorGate">
                                         <TextBlock Text="Enable learned selector rejection gate (experimental)"
+                                                   Tag="Settings.LearnedSelectorGate"
                                                    TextWrapping="Wrap" />
                                     </CheckBox>
                                     <TextBlock Style="{StaticResource MutedTextStyle}"
                                                Margin="32,6,0,0"
+                                               Tag="Settings.StandardDiagnostics"
                                                Text="Standard diagnostics stay redacted. Structured selector export writes examples only when you enable it." />
                                 </StackPanel>
                             </Border>
@@ -157,18 +199,20 @@
                     </ScrollViewer>
                 </TabItem>
 
-                <TabItem Header="Hotkeys">
+                <TabItem Header="Hotkeys" Tag="Tab.Hotkeys">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="2,10,2,0">
                             <Border Style="{StaticResource SubtleCardBorderStyle}">
                                 <StackPanel>
-                                    <TextBlock Text="SAFE MODE" Style="{StaticResource EyebrowTextStyle}" />
-                                    <TextBlock Text="Global hotkeys" Style="{StaticResource SectionHeaderStyle}" />
+                                    <TextBlock Text="SAFE MODE" Tag="Hotkeys.SafeModeEyebrow" Style="{StaticResource EyebrowTextStyle}" />
+                                    <TextBlock Text="Global hotkeys" Tag="Hotkeys.GlobalHotkeysHeader" Style="{StaticResource SectionHeaderStyle}" />
                                     <TextBlock Style="{StaticResource MutedTextStyle}"
+                                               Tag="Hotkeys.Description"
                                                Text="These hotkeys act on the focused text target even if Auto Mode is turned off."
                                                Margin="0,0,0,8" />
                                     <TextBlock x:Name="TxtHotkeyStatus"
                                                Style="{StaticResource MutedTextStyle}"
+                                               Tag="Hotkeys.StatusChecking"
                                                Text="Hotkeys status: checking..."
                                                Margin="0,0,0,14" />
 
@@ -176,35 +220,54 @@
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="180" />
                                             <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="Fix last word" VerticalAlignment="Center" />
+                                        <TextBlock Text="Fix last word" Tag="Hotkeys.FixLastWord" VerticalAlignment="Center" />
                                         <TextBox Grid.Column="1"
                                                  x:Name="TxtLastWordHotkey"
                                                  IsReadOnly="True"
-                                                 ToolTip="Click here, then press your key combination (e.g. Ctrl+Shift+K). At least one modifier required."
+                                                 Tag="Hotkeys.LastWordHotkeyField"
+                                                 ToolTip="Tooltip.Hotkeys.LastWordHotkeyField"
                                                  PreviewKeyDown="TxtHotkey_PreviewKeyDown" />
+                                        <Button Grid.Column="2"
+                                                Content="Change"
+                                                Tag="Hotkeys.ChangeShortcut"
+                                                Style="{StaticResource SecondaryButtonStyle}"
+                                                Margin="8,0,0,0"
+                                                ToolTip="Tooltip.Hotkeys.ChangeShortcut"
+                                                Click="BtnChangeLastWordHotkey_Click" />
                                     </Grid>
 
                                     <Grid>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="180" />
                                             <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="Fix selected text" VerticalAlignment="Center" />
+                                        <TextBlock Text="Fix selected text" Tag="Hotkeys.FixSelectedText" VerticalAlignment="Center" />
                                         <TextBox Grid.Column="1"
                                                  x:Name="TxtSelectionHotkey"
                                                  IsReadOnly="True"
-                                                 ToolTip="Click here, then press your key combination (e.g. Ctrl+Shift+L). At least one modifier required."
+                                                 Tag="Hotkeys.SelectionHotkeyField"
+                                                 ToolTip="Tooltip.Hotkeys.SelectionHotkeyField"
                                                  PreviewKeyDown="TxtHotkey_PreviewKeyDown" />
+                                        <Button Grid.Column="2"
+                                                Content="Change"
+                                                Tag="Hotkeys.ChangeShortcut"
+                                                Style="{StaticResource SecondaryButtonStyle}"
+                                                Margin="8,0,0,0"
+                                                ToolTip="Tooltip.Hotkeys.ChangeShortcut"
+                                                Click="BtnChangeSelectionHotkey_Click" />
                                     </Grid>
                                 </StackPanel>
                             </Border>
 
                             <Border Style="{StaticResource SubtleCardBorderStyle}">
                                 <StackPanel>
-                                    <TextBlock Text="NOTE" Style="{StaticResource EyebrowTextStyle}" />
-                                    <TextBlock Text="Current behavior" Style="{StaticResource SectionHeaderStyle}" />
+                                    <TextBlock Text="NOTE" Tag="Hotkeys.NoteEyebrow" Style="{StaticResource EyebrowTextStyle}" />
+                                    <TextBlock Text="Current behavior" Tag="Hotkeys.CurrentBehaviorHeader" Style="{StaticResource SectionHeaderStyle}" />
                                     <TextBlock Style="{StaticResource MutedTextStyle}"
+                                               Tag="Hotkeys.Note"
                                                Text="Click a hotkey field and press your desired combination (modifier + letter/key). At least one of Ctrl, Shift, or Alt is required. Changes take effect after Save." />
                                 </StackPanel>
                             </Border>
@@ -212,7 +275,7 @@
                     </ScrollViewer>
                 </TabItem>
 
-                <TabItem Header="Exclusions">
+                <TabItem Header="Exclusions" Tag="Tab.Exclusions">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="2,10,2,0">
                             <Border Style="{StaticResource SubtleCardBorderStyle}">
@@ -226,9 +289,10 @@
                                     </Grid.RowDefinitions>
 
                                     <StackPanel Grid.Row="0" Margin="0,0,0,12">
-                                        <TextBlock Text="SCOPE" Style="{StaticResource EyebrowTextStyle}" />
-                                        <TextBlock Text="Excluded processes" Style="{StaticResource SectionHeaderStyle}" />
+                                        <TextBlock Text="SCOPE" Tag="Exclusions.ScopeEyebrow" Style="{StaticResource EyebrowTextStyle}" />
+                                        <TextBlock Text="Excluded processes" Tag="Exclusions.ProcessesHeader" Style="{StaticResource SectionHeaderStyle}" />
                                         <TextBlock Style="{StaticResource MutedTextStyle}"
+                                                   Tag="Exclusions.ProcessesDescription"
                                                     Text="Choose a running app from the list or type a process name manually. Use names without .exe."
                                                    Margin="0,0,0,6" />
                                     </StackPanel>
@@ -241,21 +305,23 @@
                                         </Grid.ColumnDefinitions>
 
                                         <ComboBox x:Name="CmbRunningProcesses"
-                                                   Grid.Column="0"
-                                                   Margin="0,0,10,0"
-                                                   IsEditable="True"
-                                                   IsTextSearchEnabled="True"
-                                                   StaysOpenOnEdit="True"
-                                                   ToolTip="Click to choose a running process"
-                                                   GotKeyboardFocus="CmbRunningProcesses_GotKeyboardFocus"
-                                                   PreviewMouseLeftButtonDown="CmbRunningProcesses_PreviewMouseLeftButtonDown"
-                                                   PreviewMouseWheel="NestedScrollHost_PreviewMouseWheel" />
+                                                  Grid.Column="0"
+                                                  Margin="0,0,10,0"
+                                                  IsEditable="True"
+                                                  IsTextSearchEnabled="True"
+                                                  StaysOpenOnEdit="True"
+                                                  ToolTip="Tooltip.Exclusions.RunningProcesses"
+                                                  GotKeyboardFocus="CmbRunningProcesses_GotKeyboardFocus"
+                                                  PreviewMouseLeftButtonDown="CmbRunningProcesses_PreviewMouseLeftButtonDown"
+                                                  PreviewMouseWheel="NestedScrollHost_PreviewMouseWheel" />
                                         <Button Grid.Column="1"
                                                 Content="Add Selected"
+                                                Tag="Exclusions.AddSelected"
                                                 Click="BtnAddSuggestedExclusion_Click"
                                                 Margin="0,0,8,0" />
                                         <Button Grid.Column="2"
                                                 Content="Refresh"
+                                                Tag="Exclusions.Refresh"
                                                 Style="{StaticResource SecondaryButtonStyle}"
                                                 Click="BtnRefreshProcesses_Click" />
                                     </Grid>
@@ -270,6 +336,7 @@
 
                                     <TextBlock Grid.Row="3"
                                                Style="{StaticResource MutedTextStyle}"
+                                               Tag="Exclusions.ManualProcess"
                                                Text="Manual add: type a name like chrome, telegram, element or codex and press Enter."
                                                Margin="0,0,0,8" />
 
@@ -283,14 +350,16 @@
                                         <TextBox x:Name="TxtNewExclusion"
                                                  Grid.Column="0"
                                                  Margin="0,0,10,0"
-                                                 ToolTip="e.g. chrome, notepad, code"
+                                                 ToolTip="Tooltip.Exclusions.NewProcess"
                                                  KeyDown="TxtNewExclusion_KeyDown" />
                                         <Button Grid.Column="1"
                                                 Content="Add Manual"
+                                                Tag="Exclusions.AddManual"
                                                 Click="BtnAddExclusion_Click"
                                                 Margin="0,0,8,0" />
                                         <Button Grid.Column="2"
                                                 Content="Remove Selected"
+                                                Tag="Exclusions.RemoveSelected"
                                                 Style="{StaticResource SecondaryButtonStyle}"
                                                 Click="BtnRemoveExclusion_Click" />
                                     </Grid>
@@ -307,9 +376,10 @@
                                     </Grid.RowDefinitions>
 
                                     <StackPanel Grid.Row="0" Margin="0,0,0,12">
-                                        <TextBlock Text="AUTOMODE" Style="{StaticResource EyebrowTextStyle}" />
-                                        <TextBlock Text="Excluded words" Style="{StaticResource SectionHeaderStyle}" />
+                                        <TextBlock Text="AUTOMODE" Tag="Exclusions.AutoModeEyebrow" Style="{StaticResource EyebrowTextStyle}" />
+                                        <TextBlock Text="Excluded words" Tag="Exclusions.WordsHeader" Style="{StaticResource SectionHeaderStyle}" />
                                         <TextBlock Style="{StaticResource MutedTextStyle}"
+                                                   Tag="Exclusions.WordsDescription"
                                                    Text="Words in this list are never auto-corrected. Add them in either layout: the opposite layout form is excluded too."
                                                    TextWrapping="Wrap"
                                                    Margin="0,0,0,6" />
@@ -325,6 +395,7 @@
 
                                     <TextBlock Grid.Row="2"
                                                Style="{StaticResource MutedTextStyle}"
+                                               Tag="Exclusions.WordsExamples"
                                                Text="Examples: add either привіт or ghbdsn — both forms will be skipped by Auto Mode."
                                                TextWrapping="Wrap"
                                                Margin="0,0,0,8" />
@@ -339,14 +410,16 @@
                                         <TextBox x:Name="TxtNewExcludedWord"
                                                  Grid.Column="0"
                                                  Margin="0,0,10,0"
-                                                 ToolTip="e.g. привіт or ghbdsn"
+                                                 ToolTip="Tooltip.Exclusions.NewWord"
                                                  KeyDown="TxtNewExcludedWord_KeyDown" />
                                         <Button Grid.Column="1"
                                                 Content="Add Word"
+                                                Tag="Exclusions.AddWord"
                                                 Click="BtnAddExcludedWord_Click"
                                                 Margin="0,0,8,0" />
                                         <Button Grid.Column="2"
                                                 Content="Remove Selected"
+                                                Tag="Exclusions.RemoveSelected"
                                                 Style="{StaticResource SecondaryButtonStyle}"
                                                 Click="BtnRemoveExcludedWord_Click" />
                                     </Grid>
@@ -356,49 +429,56 @@
                     </ScrollViewer>
                 </TabItem>
 
-                <TabItem Header="About">
+                <TabItem Header="About" Tag="Tab.About">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="2,10,2,0">
                             <Border Style="{StaticResource SubtleCardBorderStyle}">
                                 <StackPanel>
-                                    <TextBlock Text="PRODUCT" Style="{StaticResource EyebrowTextStyle}" />
+                                    <TextBlock Text="PRODUCT" Tag="About.ProductEyebrow" Style="{StaticResource EyebrowTextStyle}" />
                                     <TextBlock Text="EN-UA Switcher" Style="{StaticResource SectionHeaderStyle}" />
                                     <TextBlock Style="{StaticResource MutedTextStyle}"
+                                               Tag="About.Subtitle"
                                                Text="EN / UA Keyboard Layout Corrector"
                                                Margin="0,0,0,12" />
                                     <TextBlock Style="{StaticResource MutedTextStyle}"
+                                               Tag="About.Description"
                                                Text="EN-UA Switcher detects text typed in the wrong keyboard layout and corrects it across native editors, browser inputs and selected fallback paths." />
                                 </StackPanel>
                             </Border>
 
                             <Border Style="{StaticResource SubtleCardBorderStyle}">
                                 <StackPanel>
-                                    <TextBlock Text="TARGETS" Style="{StaticResource EyebrowTextStyle}" />
-                                    <TextBlock Text="Supported contexts" Style="{StaticResource SectionHeaderStyle}" />
+                                    <TextBlock Text="TARGETS" Tag="About.TargetsEyebrow" Style="{StaticResource EyebrowTextStyle}" />
+                                    <TextBlock Text="Supported contexts" Tag="About.ContextsHeader" Style="{StaticResource SectionHeaderStyle}" />
                                     <TextBlock TextWrapping="Wrap" Margin="0,0,0,6"
+                                               Tag="About.TargetNative"
                                                Text="✓ Notepad, WordPad and other classic Win32 EDIT/RichEdit controls." />
                                     <TextBlock TextWrapping="Wrap" Margin="0,0,0,6"
+                                               Tag="About.TargetBrowser"
                                                Text="~ Browser inputs and textareas when UI Automation exposes a writable field." />
                                     <TextBlock TextWrapping="Wrap" Margin="0,0,0,6"
+                                               Tag="About.TargetElectron"
                                                Text="~ Electron apps and many desktop editors via SendInput-based correction paths." />
                                 </StackPanel>
                             </Border>
 
                             <Border Style="{StaticResource SubtleCardBorderStyle}">
                                 <StackPanel>
-                                    <TextBlock Text="SHORTCUTS" Style="{StaticResource EyebrowTextStyle}" />
-                                    <TextBlock Text="Safe mode actions" Style="{StaticResource SectionHeaderStyle}" />
+                                    <TextBlock Text="SHORTCUTS" Tag="About.ShortcutsEyebrow" Style="{StaticResource EyebrowTextStyle}" />
+                                    <TextBlock Text="Safe mode actions" Tag="About.SafeActionsHeader" Style="{StaticResource SectionHeaderStyle}" />
                                     <TextBlock TextWrapping="Wrap" Margin="0,0,0,6"
+                                               Tag="About.LastWordHotkey"
                                                Text="Ctrl+Shift+K — fix last word before caret" />
                                     <TextBlock TextWrapping="Wrap"
+                                               Tag="About.SelectionHotkey"
                                                Text="Ctrl+Shift+L — fix selected text" />
                                 </StackPanel>
                             </Border>
 
                             <Border Style="{StaticResource SubtleCardBorderStyle}">
                                 <StackPanel>
-                                    <TextBlock Text="CONTACT" Style="{StaticResource EyebrowTextStyle}" />
-                                    <TextBlock Text="Author" Style="{StaticResource SectionHeaderStyle}" />
+                                    <TextBlock Text="CONTACT" Tag="About.ContactEyebrow" Style="{StaticResource EyebrowTextStyle}" />
+                                    <TextBlock Text="Author" Tag="About.AuthorHeader" Style="{StaticResource SectionHeaderStyle}" />
                                     <TextBlock Style="{StaticResource MutedTextStyle}"
                                                Text="stokratt@gmail.com" />
                                 </StackPanel>
@@ -406,10 +486,11 @@
 
                             <Border Style="{StaticResource SubtleCardBorderStyle}">
                                 <StackPanel>
-                                    <TextBlock Text="BUILD" Style="{StaticResource EyebrowTextStyle}" />
-                                    <TextBlock Text="Version" Style="{StaticResource SectionHeaderStyle}" />
+                                    <TextBlock Text="BUILD" Tag="About.BuildEyebrow" Style="{StaticResource EyebrowTextStyle}" />
+                                    <TextBlock Text="Version" Tag="About.VersionHeader" Style="{StaticResource SectionHeaderStyle}" />
                                     <TextBlock x:Name="TxtAboutVersion"
                                                Style="{StaticResource MutedTextStyle}"
+                                               Tag="About.DetectingVersion"
                                                Text="Detecting version..." />
                                 </StackPanel>
                             </Border>
@@ -426,15 +507,18 @@
                 Margin="0,10,0,0">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                 <Button Content="View Diagnostics"
+                        Tag="Action.ViewDiagnostics"
                         Style="{StaticResource SecondaryButtonStyle}"
                         Margin="0,0,10,0"
                         Click="BtnDiagnostics_Click" />
                 <Button Content="Cancel"
+                        Tag="Action.Cancel"
                         Style="{StaticResource SecondaryButtonStyle}"
                         Margin="0,0,10,0"
                         Click="BtnCancel_Click" />
                 <Button x:Name="BtnSave"
                         Content="Saved"
+                        Tag="Action.Saved"
                         IsEnabled="False"
                         Click="BtnSave_Click" />
             </StackPanel>

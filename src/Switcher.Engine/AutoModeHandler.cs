@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Reflection;
 using System.Text;
 using System.Windows.Automation;
 using Switcher.Core;
@@ -15,6 +16,7 @@ public class AutoModeHandler
     private const int AddressBarClipboardCopyInitialDelayMs = 55;
     private const int AddressBarClipboardCopyRetryDelayMs = 35;
     private const int AddressBarClipboardCopyAttempts = 4;
+    private static readonly TimeSpan RecentAutoSwitchGuardWindow = TimeSpan.FromSeconds(20);
 
     private static readonly HashSet<string> BrowserProcesses = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -64,15 +66,16 @@ public class AutoModeHandler
         "address and search bar",
         "address bar",
         "search or enter address",
+        "search google or type a url",
         "search with google or enter address",
+        "search google or enter address",
         "search or type a url",
         "search or type web address",
-        "search the web",
-        "location",
         "location bar",
-        "url",
         "url bar",
         "адресний рядок",
+        "пошук google або введіть url-адресу",
+        "шукайте в google або введіть url-адресу",
         "адресная строка",
         "рядок адреси",
         "строка поиска или адреса",
@@ -98,6 +101,18 @@ public class AutoModeHandler
         "google презентации"  // ru
     ];
 
+    private static readonly string[] YouTubeTitleMarkers =
+    [
+        "youtube",
+        "youtu.be"
+    ];
+
+    private static readonly string[] OneNoteTitleMarkers =
+    [
+        "onenote",
+        "one note"
+    ];
+
     private readonly ForegroundContextProvider _contextProvider;
     private readonly TextTargetCoordinator _coordinator;
     private readonly ExclusionManager _exclusions;
@@ -106,6 +121,12 @@ public class AutoModeHandler
     private readonly KeyboardObserver _observer;
 
     private record UndoState(string OriginalText, string ReplacementText, CorrectionDirection Direction, uint DelimiterVk);
+    private sealed record AutoSwitchState(
+        CorrectionDirection Direction,
+        DateTime AtUtc,
+        uint ProcessId,
+        IntPtr Hwnd,
+        IntPtr FocusedControlHwnd);
 
     private sealed record BrowserSurfaceSnapshot(
         bool HasFocusedElement,
@@ -116,6 +137,7 @@ public class AutoModeHandler
         string ClassName,
         string AutomationId,
         string ElementName,
+        string AriaProperties,
         bool UnsafeCustomEditorLike,
         string Summary);
 
@@ -125,6 +147,7 @@ public class AutoModeHandler
         string FullText);
 
     private UndoState? _lastCorrection;
+    private AutoSwitchState? _lastAutoSwitch;
     private int _autoOperationInFlight;
 
     public AutoModeHandler(
@@ -154,6 +177,15 @@ public class AutoModeHandler
         if (snapshot is null)
             return;
 
+        if (_exclusions.IsExcluded(snapshot.ProcessName))
+        {
+            LogSkip(snapshot, "AutoMode", $"Process is excluded {snapshot.TechDetail}");
+            return;
+        }
+
+        if (TryHandleRecentSwitchSingleLetter(snapshot, approxWordLength))
+            return;
+
         if (approxWordLength < 2 || (snapshot.AnalysisWordEN.Length < 2 && snapshot.AnalysisWordUA.Length < 2))
         {
             if (!snapshot.BufferQuality.NeedsLiveDiscovery || approxWordLength < 3)
@@ -161,12 +193,6 @@ public class AutoModeHandler
                 LogSkip(snapshot, "AutoMode", $"Too short {snapshot.TechDetail} [{snapshot.RawDebug}]");
                 return;
             }
-        }
-
-        if (_exclusions.IsExcluded(snapshot.ProcessName))
-        {
-            LogSkip(snapshot, "AutoMode", $"Process is excluded {snapshot.TechDetail}");
-            return;
         }
 
         // Chromium-based surfaces (Chrome/Edge/Brave/etc. AND Electron apps built on them,
@@ -181,12 +207,16 @@ public class AutoModeHandler
         // via UIA (ValuePattern / TextPattern). The Google Docs path reads the actual text
         // via the system clipboard (Shift+Left×N → Ctrl+C). Neither depends on the hook
         // buffer, so we can safely bypass the buffer-derived context guard in those cases.
+        BrowserSurfaceSnapshot? guardSurface = null;
+        BrowserSurfaceSnapshot GetGuardSurface() => guardSurface ??= InspectBrowserSurface();
+
         bool bypassContextGuardForLiveRead =
             snapshot.BufferQuality.NeedsLiveDiscovery
             && IsBrowserLikeContext(snapshot.Context)
             && (ShouldUseElectronUiaPath(snapshot.Context.ProcessName)
-                || IsBrowserAddressBarSurface(snapshot.Context, InspectBrowserSurface())
-                || IsGoogleDocsSurface(snapshot.Context));
+                || IsBrowserAddressBarSurface(snapshot.Context, GetGuardSurface())
+                || IsGoogleDocsSurface(snapshot.Context)
+                || IsYouTubeBrowserPageSurface(snapshot.Context, GetGuardSurface()));
 
         if (!bypassContextGuardForLiveRead)
         {
@@ -521,6 +551,17 @@ public class AutoModeHandler
                 $"profile={ReplacementSafetyProfile.NativeSafe} path={ReplacementExecutionPath.NativeSelectionTransaction}");
         }
 
+        if (ShouldUseOneNoteNativeBackspaceRoute(snapshot, decision))
+        {
+            return new ReplacementPlan(
+                snapshot,
+                decision,
+                ReplacementSafetyProfile.NativeSafe,
+                ReplacementExecutionPath.NativeSelectionTransaction,
+                "OneNoteBackspace",
+                $"profile={ReplacementSafetyProfile.NativeSafe} path={ReplacementExecutionPath.NativeSelectionTransaction} surface=onenote-backspace");
+        }
+
         // Electron-specific path: UIA read + Backspace+Unicode replace (no Shift+Left selection, no race).
         // Gated behind a user opt-in setting so it can be tested without affecting default behaviour.
         if (ShouldUseElectronUiaPath(snapshot.Context.ProcessName))
@@ -560,15 +601,26 @@ public class AutoModeHandler
             return new ReplacementPlan(snapshot, decision, addressBarProfile, path, adapterName, reason);
         }
 
-        if (CanUseBufferedBrowserBackspace(decision))
+        if (ShouldUseYouTubeLiveBackspaceRoute(snapshot, decision, surface))
         {
             return new ReplacementPlan(
                 snapshot,
                 decision,
                 ReplacementSafetyProfile.NativeSafe,
-                ReplacementExecutionPath.NativeSelectionTransaction,
-                "SendInput",
-                $"profile={ReplacementSafetyProfile.NativeSafe} path={ReplacementExecutionPath.NativeSelectionTransaction} surface=browser-buffered-backspace");
+                ReplacementExecutionPath.BrowserPageLiveBackspace,
+                "YouTubeLiveBackspace",
+                $"profile={ReplacementSafetyProfile.NativeSafe} path={ReplacementExecutionPath.BrowserPageLiveBackspace} surface=youtube-live-backspace {surface.Summary}");
+        }
+
+        if (ShouldUseBrowserPageClipboardFallback(snapshot, decision, surface))
+        {
+            return new ReplacementPlan(
+                snapshot,
+                BuildBrowserPageClipboardDecision(decision),
+                ReplacementSafetyProfile.BrowserBestEffort,
+                ReplacementExecutionPath.ClipboardAssistedSelection,
+                "ClipboardSelectionTransaction",
+                $"profile={ReplacementSafetyProfile.BrowserBestEffort} path={ReplacementExecutionPath.ClipboardAssistedSelection} surface=browser-page-exact-clipboard {surface.Summary}");
         }
 
         ReplacementSafetyProfile profile = ClassifyReplacementSafetyProfile(
@@ -625,11 +677,17 @@ public class AutoModeHandler
                 case ReplacementExecutionPath.BrowserAddressBarLiveTokenBackspace:
                     ExecuteBrowserAddressBarLiveTokenReplacement(plan);
                     break;
+                case ReplacementExecutionPath.BrowserPageLiveBackspace:
+                    ExecuteBrowserPageLiveBackspaceReplacement(plan);
+                    break;
                 case ReplacementExecutionPath.BrowserValuePattern:
                     await ExecuteBrowserValuePatternReplacement(plan);
                     break;
                 case ReplacementExecutionPath.ClipboardAssistedSelection:
-                    await ExecuteClipboardAssistedReplacement(plan);
+                    if (IsBrowserPageExactClipboardPlan(plan))
+                        ExecuteBrowserPageClipboardReplacement(plan);
+                    else
+                        await ExecuteClipboardAssistedReplacement(plan);
                     break;
                 case ReplacementExecutionPath.ElectronUiaBackspaceReplace:
                     await ExecuteElectronUiaReplacement(plan);
@@ -720,7 +778,7 @@ public class AutoModeHandler
         string? addressText = TryReadFocusedValuePatternText();
         if (string.IsNullOrWhiteSpace(addressText))
         {
-            ExecuteBrowserAddressBarClipboardTokenReplacement(plan, "live UIA text unavailable");
+            LogSkip(snapshot, plan.AdapterName, "Browser address bar live token skipped: live UIA text unavailable");
             TryReinjectDelimiter(plan);
             return;
         }
@@ -728,7 +786,7 @@ public class AutoModeHandler
         AddressBarLiveTokenCandidate? live = TryBuildAddressBarLiveTokenCandidate(addressText, snapshot.Context.ProcessName);
         if (live is null)
         {
-            ExecuteBrowserAddressBarClipboardTokenReplacement(plan, "live UIA token has no safe conversion");
+            LogSkip(snapshot, plan.AdapterName, "Browser address bar live token skipped: live UIA token has no safe conversion");
             TryReinjectDelimiter(plan);
             return;
         }
@@ -754,6 +812,70 @@ public class AutoModeHandler
             success
                 ? $"{plan.Reason}; live-token; {candidate.Reason}"
                 : $"{plan.Reason}; live-token SendInput returned {sent}/{inputs.Length}");
+
+        if (success)
+            FinalizeSuccessfulReplacement(snapshot, candidate);
+
+        Thread.Sleep(30);
+        TryReinjectDelimiter(plan);
+    }
+
+    private void ExecuteBrowserPageLiveBackspaceReplacement(ReplacementPlan plan)
+    {
+        var snapshot = plan.Snapshot;
+        if (TryAbortPreconditions(
+                snapshot,
+                string.Empty,
+                "Browser page live backspace",
+                out string abortReason,
+                allowPostDelimiterInteraction: false,
+                requireVisibleExpectedWord: false))
+        {
+            LogSkip(snapshot, plan.AdapterName, $"Browser page live backspace aborted: {abortReason}");
+            TryReinjectDelimiter(plan);
+            return;
+        }
+
+        var adapter = snapshot.ReadAdapter as UIAutomationTargetAdapter ?? new UIAutomationTargetAdapter();
+        string actualWord = snapshot.LiveWord;
+        if (string.IsNullOrWhiteSpace(actualWord) || actualWord.Length < 2)
+            actualWord = adapter.TryGetLastWord(snapshot.Context) ?? string.Empty;
+
+        if (string.IsNullOrWhiteSpace(actualWord) || actualWord.Length < 2)
+        {
+            LogSkip(snapshot, plan.AdapterName, "Browser page live backspace skipped: live word unavailable");
+            TryReinjectDelimiter(plan);
+            return;
+        }
+
+        CandidateDecision liveDecision = plan.Decision.Candidate is not null
+                                         && ExactSliceMatchesExpected(actualWord, plan.Decision.Candidate.OriginalText)
+            ? plan.Decision
+            : BuildLiveRuntimeCandidateDecision(snapshot, actualWord);
+        CorrectionCandidate? candidate = liveDecision.Candidate;
+        if (candidate is null)
+        {
+            LogSkip(snapshot, plan.AdapterName, $"Browser page live backspace skipped: {liveDecision.Reason}", actualWord);
+            TryReinjectDelimiter(plan);
+            return;
+        }
+
+        var inputs = BuildAutoReplacementInputs(actualWord, candidate.ConvertedText, string.Empty, actualWord.Length);
+        uint sent = NativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<NativeMethods.INPUT>());
+        bool success = sent == (uint)inputs.Length;
+
+        _diagnostics.Log(
+            snapshot.ProcessName,
+            snapshot.ControlClass,
+            plan.AdapterName,
+            true,
+            OperationType.AutoMode,
+            actualWord,
+            candidate.ConvertedText,
+            success ? DiagnosticResult.Replaced : DiagnosticResult.Error,
+            success
+                ? $"{plan.Reason}; {liveDecision.Reason}"
+                : $"{plan.Reason}; SendInput returned {sent}/{inputs.Length}");
 
         if (success)
             FinalizeSuccessfulReplacement(snapshot, candidate);
@@ -825,6 +947,25 @@ public class AutoModeHandler
                 CollapseSelectionRight();
                 LogSkip(snapshot, plan.AdapterName, $"Browser address bar token fallback skipped: {liveDecision.Reason}", liveToken);
                 return;
+            }
+
+            if (!IsExactSelectedAddressBarToken(selectedText, liveToken))
+            {
+                CollapseSelectionRight();
+                NativeMethods.INPUT[] reselectInputs = BuildSelectionInputs(liveToken.Length);
+                uint reselected = NativeMethods.SendInput(
+                    (uint)reselectInputs.Length,
+                    reselectInputs,
+                    Marshal.SizeOf<NativeMethods.INPUT>());
+
+                if (reselected != (uint)reselectInputs.Length)
+                {
+                    CollapseSelectionRight();
+                    LogSkip(snapshot, plan.AdapterName, $"Browser address bar token fallback aborted: exact token reselect returned {reselected}/{reselectInputs.Length}");
+                    return;
+                }
+
+                Thread.Sleep(AddressBarClipboardSelectDelayMs);
             }
 
             NativeMethods.INPUT[] typeInputs = BuildUnicodeInputs(candidate.ConvertedText);
@@ -1104,10 +1245,11 @@ public class AutoModeHandler
     {
         long startCount = _observer.UserKeyDownCounter;
         var snapshot = plan.Snapshot;
-        await Task.Delay(ClipboardAssistedStartDelayMs);
+        await Task.Delay(GetClipboardAssistedStartDelayMs(plan));
         if (_observer.UserKeyDownCounter != startCount)
         {
             LogSkip(snapshot, plan.AdapterName, "Browser best-effort aborted: user kept typing before async replace started");
+            TryReinjectDelimiter(plan);
             return;
         }
 
@@ -1242,6 +1384,120 @@ public class AutoModeHandler
         }
     }
 
+    private void ExecuteBrowserPageClipboardReplacement(ReplacementPlan plan)
+    {
+        var snapshot = plan.Snapshot;
+        string expectedWord = GetClipboardPreconditionExpectedWord(plan);
+        if (TryAbortPreconditions(snapshot, expectedWord, "Browser page clipboard preflight", out string abortReason))
+        {
+            LogSkip(snapshot, plan.AdapterName, $"Browser page clipboard aborted: {abortReason}");
+            TryReinjectDelimiter(plan);
+            return;
+        }
+
+        int selectionLength = DetermineSelectionLength(snapshot, plan.Decision);
+        if (selectionLength < 2)
+        {
+            LogSkip(snapshot, plan.AdapterName, "Browser page clipboard aborted: selection length is too short");
+            TryReinjectDelimiter(plan);
+            return;
+        }
+
+        string? savedClipboard = NativeMethods.GetClipboardText();
+        NativeMethods.SetClipboardText(null);
+
+        try
+        {
+            NativeMethods.INPUT[] selectionInputs = BuildSelectionInputs(selectionLength);
+            NativeMethods.SendInput((uint)selectionInputs.Length, selectionInputs, Marshal.SizeOf<NativeMethods.INPUT>());
+            Thread.Sleep(45);
+
+            NativeMethods.INPUT[] copyInputs = BuildCopyInputs();
+            NativeMethods.SendInput((uint)copyInputs.Length, copyInputs, Marshal.SizeOf<NativeMethods.INPUT>());
+
+            string? selectedText = null;
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                Thread.Sleep(attempt == 0 ? 55 : 65);
+                if (TryAbortPreconditions(snapshot, expectedWord, "Browser page clipboard wait", out abortReason))
+                {
+                    LogSkip(snapshot, plan.AdapterName, $"Browser page clipboard aborted: {abortReason}");
+                    CollapseSelectionRight();
+                    TryReinjectDelimiter(plan);
+                    return;
+                }
+
+                selectedText = NativeMethods.GetClipboardText();
+                if (!string.IsNullOrEmpty(selectedText))
+                    break;
+            }
+
+            CollapseSelectionRight();
+
+            if (string.IsNullOrWhiteSpace(selectedText))
+            {
+                LogSkip(snapshot, plan.AdapterName, "Browser page clipboard aborted: clipboard read is stale or empty");
+                TryReinjectDelimiter(plan);
+                return;
+            }
+
+            string liveWord = selectedText.Trim();
+            if (string.IsNullOrWhiteSpace(liveWord) || liveWord.Length < 2 || liveWord.Any(char.IsWhiteSpace))
+            {
+                LogSkip(snapshot, plan.AdapterName, $"Browser page clipboard aborted: copied slice is not one word [{liveWord}]");
+                TryReinjectDelimiter(plan);
+                return;
+            }
+
+            var liveDecision = BuildLiveRuntimeCandidateDecision(snapshot, liveWord);
+            CorrectionCandidate? candidate = liveDecision.Candidate;
+            if (candidate is null)
+            {
+                LogSkip(snapshot, plan.AdapterName, $"Browser page clipboard skipped: {liveDecision.Reason}", liveWord);
+                TryReinjectDelimiter(plan);
+                return;
+            }
+
+            if (TryAbortPreconditions(snapshot, string.Empty, "Browser page clipboard before replace", out abortReason))
+            {
+                LogSkip(snapshot, plan.AdapterName, $"Browser page clipboard aborted: {abortReason}");
+                TryReinjectDelimiter(plan);
+                return;
+            }
+
+            NativeMethods.INPUT[] reselectInputs = BuildSelectionInputs(liveWord.Length);
+            NativeMethods.SendInput((uint)reselectInputs.Length, reselectInputs, Marshal.SizeOf<NativeMethods.INPUT>());
+            Thread.Sleep(25);
+
+            NativeMethods.INPUT[] typeInputs = BuildUnicodeInputs(candidate.ConvertedText);
+            uint sent = NativeMethods.SendInput((uint)typeInputs.Length, typeInputs, Marshal.SizeOf<NativeMethods.INPUT>());
+            bool success = sent == (uint)typeInputs.Length;
+
+            _diagnostics.Log(
+                snapshot.ProcessName,
+                snapshot.ControlClass,
+                plan.AdapterName,
+                true,
+                OperationType.AutoMode,
+                liveWord,
+                candidate.ConvertedText,
+                success ? DiagnosticResult.Replaced : DiagnosticResult.Error,
+                success
+                    ? $"{plan.Reason}; browser-page-sync; {liveDecision.Reason}"
+                    : $"{plan.Reason}; browser-page-sync SendInput returned {sent}/{typeInputs.Length}");
+
+            if (success)
+                FinalizeSuccessfulReplacement(snapshot, candidate);
+
+            Thread.Sleep(30);
+            TryReinjectDelimiter(plan);
+        }
+        finally
+        {
+            NativeMethods.SetClipboardText(savedClipboard);
+        }
+    }
+
     private CandidateDecision BuildLiveRuntimeCandidateDecision(WordSnapshot snapshot, string actualWord)
     {
         if (_exclusions.IsWordExcluded(actualWord))
@@ -1269,6 +1525,163 @@ public class AutoModeHandler
         }
 
         return ApplyLearnedSelector(snapshot, candidate, CandidateSource.LiveRuntimeRead, candidate.Reason);
+    }
+
+    private bool TryHandleRecentSwitchSingleLetter(WordSnapshot snapshot, int approxWordLength)
+    {
+        AutoSwitchState? recentSwitch = _lastAutoSwitch;
+        if (recentSwitch is null)
+            return false;
+
+        DateTime nowUtc = DateTime.UtcNow;
+        CorrectionCandidate? candidate = TryBuildRecentSwitchSingleLetterCandidate(
+            snapshot,
+            approxWordLength,
+            recentSwitch,
+            nowUtc);
+
+        if (candidate is null)
+        {
+            if (ShouldConsumeRecentAutoSwitch(snapshot, recentSwitch, nowUtc))
+                _lastAutoSwitch = null;
+
+            return false;
+        }
+
+        BrowserSurfaceSnapshot surface = InspectBrowserSurface();
+        if (!IsRecentSwitchSingleLetterSurface(snapshot.Context, surface))
+        {
+            _lastAutoSwitch = null;
+            return false;
+        }
+
+        var decision = new CandidateDecision(
+            candidate,
+            CandidateSource.PrimaryHeuristics,
+            RequiresLiveRuntimeRead: false,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: candidate.Reason);
+        var plan = new ReplacementPlan(
+            snapshot,
+            decision,
+            ReplacementSafetyProfile.NativeSafe,
+            ReplacementExecutionPath.NativeSelectionTransaction,
+            "RecentSwitchGuard",
+            $"profile={ReplacementSafetyProfile.NativeSafe} path={ReplacementExecutionPath.NativeSelectionTransaction} reason={candidate.Reason}");
+
+        if (!TryBeginAutoOperation(snapshot, plan))
+            return true;
+
+        _observer.SuppressCurrentDelimiter();
+        _ = ExecuteReplacementPlan(plan);
+        return true;
+    }
+
+    private static CorrectionCandidate? TryBuildRecentSwitchSingleLetterCandidate(
+        WordSnapshot snapshot,
+        int approxWordLength,
+        AutoSwitchState? recentSwitch,
+        DateTime nowUtc)
+    {
+        if (recentSwitch is null)
+            return null;
+
+        if (recentSwitch.Direction != CorrectionDirection.UaToEn)
+            return null;
+
+        if (!IsRecentAutoSwitchContext(snapshot, recentSwitch, nowUtc))
+            return null;
+
+        if (!string.Equals(snapshot.LayoutTag, "EN", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        if (approxWordLength != 1 || snapshot.BufferQuality.ApproxWordLength != 1)
+            return null;
+
+        string original = FirstNonEmpty(snapshot.AnalysisWordEN, snapshot.WordEN, snapshot.VkWordEN);
+        string converted = FirstNonEmpty(snapshot.AnalysisWordUA, snapshot.WordUA, snapshot.VkWordUA);
+        if (string.Equals(original, "f", StringComparison.Ordinal)
+            && string.Equals(converted, "а", StringComparison.Ordinal))
+        {
+            return new CorrectionCandidate(
+                "f",
+                "а",
+                CorrectionDirection.EnToUa,
+                0.99,
+                "recent UaToEn switch single-letter guard");
+        }
+
+        if (string.Equals(original, "d", StringComparison.Ordinal)
+            && string.Equals(converted, "в", StringComparison.Ordinal))
+        {
+            return new CorrectionCandidate(
+                "d",
+                "в",
+                CorrectionDirection.EnToUa,
+                0.99,
+                "recent UaToEn switch single-letter guard");
+        }
+
+        if (string.Equals(original, "F", StringComparison.Ordinal)
+            && string.Equals(converted, "А", StringComparison.Ordinal))
+        {
+            return new CorrectionCandidate(
+                "F",
+                "А",
+                CorrectionDirection.EnToUa,
+                0.99,
+                "recent UaToEn switch single-letter guard");
+        }
+
+        if (string.Equals(original, "D", StringComparison.Ordinal)
+            && string.Equals(converted, "В", StringComparison.Ordinal))
+        {
+            return new CorrectionCandidate(
+                "D",
+                "В",
+                CorrectionDirection.EnToUa,
+                0.99,
+                "recent UaToEn switch single-letter guard");
+        }
+
+        return null;
+    }
+
+    private static bool ShouldConsumeRecentAutoSwitch(
+        WordSnapshot snapshot,
+        AutoSwitchState recentSwitch,
+        DateTime nowUtc) =>
+        recentSwitch.Direction == CorrectionDirection.UaToEn
+        && IsRecentAutoSwitchContext(snapshot, recentSwitch, nowUtc);
+
+    private static bool IsRecentAutoSwitchContext(
+        WordSnapshot snapshot,
+        AutoSwitchState recentSwitch,
+        DateTime nowUtc)
+    {
+        if (nowUtc - recentSwitch.AtUtc > RecentAutoSwitchGuardWindow)
+            return false;
+
+        return snapshot.Context.ProcessId == recentSwitch.ProcessId
+               && snapshot.Context.Hwnd == recentSwitch.Hwnd;
+    }
+
+    private static bool IsRecentSwitchSingleLetterSurface(
+        ForegroundContext context,
+        BrowserSurfaceSnapshot surface) =>
+        IsBrowserPageFocusedControl(context)
+        && !IsBrowserAddressBarSurface(context, surface);
+
+    private static string FirstNonEmpty(params string[] values)
+    {
+        foreach (string value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+                return value.Trim();
+        }
+
+        return string.Empty;
     }
 
     private bool TryBeginAutoOperation(WordSnapshot snapshot, ReplacementPlan plan)
@@ -1306,6 +1719,14 @@ public class AutoModeHandler
             snapshot.Context.FocusedControlHwnd,
             toUkrainian: candidate.Direction == CorrectionDirection.EnToUa);
         _lastCorrection = new UndoState(candidate.OriginalText, candidate.ConvertedText, candidate.Direction, snapshot.DelimiterVk);
+        _lastAutoSwitch = candidate.Direction == CorrectionDirection.None
+            ? null
+            : new AutoSwitchState(
+                candidate.Direction,
+                DateTime.UtcNow,
+                snapshot.Context.ProcessId,
+                snapshot.Context.Hwnd,
+                snapshot.Context.FocusedControlHwnd);
     }
 
     private bool TryAbortPreconditions(WordSnapshot snapshot, string expectedOriginal, string stage, out string reason)
@@ -1455,11 +1876,16 @@ public class AutoModeHandler
     private static bool ShouldExecuteImmediately(ReplacementPlan plan) =>
         plan.ExecutionPath is ReplacementExecutionPath.NativeSelectionTransaction
             or ReplacementExecutionPath.BrowserAddressBarBufferedBackspace
-            or ReplacementExecutionPath.BrowserAddressBarLiveTokenBackspace;
+            or ReplacementExecutionPath.BrowserAddressBarLiveTokenBackspace
+            or ReplacementExecutionPath.BrowserPageLiveBackspace;
 
     private static bool ShouldSuppressDelimiter(ReplacementPlan plan) =>
         !(plan.ExecutionPath == ReplacementExecutionPath.BrowserValuePattern
           && plan.Snapshot.DelimiterVk == NativeMethods.VK_SPACE);
+
+    private static bool IsBrowserPageExactClipboardPlan(ReplacementPlan plan) =>
+        plan.ExecutionPath == ReplacementExecutionPath.ClipboardAssistedSelection
+        && plan.Reason.Contains("surface=browser-page-exact-clipboard", StringComparison.Ordinal);
 
     private static CorrectionCandidate? TryEvaluateCandidate(string text, string visibleTrailingSuffix)
     {
@@ -1544,6 +1970,9 @@ public class AutoModeHandler
         token = text[start..end];
         return token.Length >= 2;
     }
+
+    private static bool IsExactSelectedAddressBarToken(string selectedText, string liveToken) =>
+        string.Equals(selectedText, liveToken, StringComparison.Ordinal);
 
     private static CorrectionCandidate? TryEvaluateVisibleTokenCandidate(string token)
     {
@@ -1635,6 +2064,7 @@ public class AutoModeHandler
                     string.Empty,
                     string.Empty,
                     string.Empty,
+                    string.Empty,
                     false,
                     "uia=none");
             }
@@ -1649,7 +2079,8 @@ public class AutoModeHandler
             string className = element.Current.ClassName ?? string.Empty;
             string automationId = element.Current.AutomationId ?? string.Empty;
             string elementName = element.Current.Name ?? string.Empty;
-            string merged = $"{controlType} {localizedControlType} {className} {automationId} {elementName}".ToLowerInvariant();
+            string ariaProperties = TryReadAutomationStringProperty(element, "AriaPropertiesProperty");
+            string merged = $"{controlType} {localizedControlType} {className} {automationId} {elementName} {ariaProperties}".ToLowerInvariant();
             bool customType = element.Current.ControlType == ControlType.Document
                               || element.Current.ControlType == ControlType.Custom
                               || element.Current.ControlType == ControlType.Pane;
@@ -1665,8 +2096,9 @@ public class AutoModeHandler
                 ClassName: className,
                 AutomationId: automationId,
                 ElementName: elementName,
+                AriaProperties: ariaProperties,
                 UnsafeCustomEditorLike: unsafeCustom,
-                Summary: $"uia=value={hasWritableValuePattern} text={hasTextPattern} type={controlType}/{localizedControlType} class={className} id={automationId} name={elementName}");
+                Summary: $"uia=value={hasWritableValuePattern} text={hasTextPattern} type={controlType}/{localizedControlType} class={className} id={automationId} name={elementName} aria={ariaProperties}");
         }
         catch (Exception ex)
         {
@@ -1679,8 +2111,34 @@ public class AutoModeHandler
                 string.Empty,
                 string.Empty,
                 string.Empty,
+                string.Empty,
                 false,
                 $"uia=error:{ex.GetType().Name}");
+        }
+    }
+
+    private static string TryReadAutomationStringProperty(AutomationElement element, string propertyName)
+    {
+        try
+        {
+            AutomationProperty? property = typeof(AutomationElementIdentifiers)
+                .GetProperty(propertyName, BindingFlags.Public | BindingFlags.Static)
+                ?.GetValue(null) as AutomationProperty
+                ?? typeof(AutomationElementIdentifiers)
+                    .GetField(propertyName, BindingFlags.Public | BindingFlags.Static)
+                    ?.GetValue(null) as AutomationProperty;
+
+            if (property is null)
+                return string.Empty;
+
+            object value = element.GetCurrentPropertyValue(property, ignoreDefaultValue: true);
+            return ReferenceEquals(value, AutomationElement.NotSupported)
+                ? string.Empty
+                : value?.ToString() ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
         }
     }
 
@@ -1696,6 +2154,35 @@ public class AutoModeHandler
         && (_settings.Current.ElectronUiaPathEnabled
             || DefaultElectronUiaProcesses.Contains(processName));
 
+    private static bool ShouldUseBrowserPageClipboardFallback(
+        WordSnapshot snapshot,
+        CandidateDecision decision,
+        BrowserSurfaceSnapshot surface)
+    {
+        return false;
+    }
+
+    private static int GetClipboardAssistedStartDelayMs(ReplacementPlan plan) =>
+        plan.Reason.Contains("surface=browser-page-exact-clipboard", StringComparison.Ordinal)
+            ? 20
+            : ClipboardAssistedStartDelayMs;
+
+    private static CandidateDecision BuildBrowserPageClipboardDecision(CandidateDecision decision)
+    {
+        if (decision.RequiresLiveRuntimeRead || decision.Candidate is null)
+            return decision;
+
+        return decision with
+        {
+            RequiresLiveRuntimeRead = true,
+            Reason = $"{decision.Reason}; browser page clipboard verifies live slice"
+        };
+    }
+
+    private static bool IsBrowserPageFocusedControl(ForegroundContext context) =>
+        string.Equals(context.FocusedControlClass, "Chrome_RenderWidgetHostHWND", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(context.WindowClass, "MozillaWindowClass", StringComparison.OrdinalIgnoreCase);
+
     private static bool ShouldUseBrowserWordTokenRoute(
         WordSnapshot snapshot,
         CandidateDecision decision,
@@ -1704,13 +2191,7 @@ public class AutoModeHandler
         if (!IsBrowserAddressBarProcess(snapshot.ProcessName))
             return false;
 
-        if (IsBrowserAddressBarSurface(snapshot.Context, surface))
-            return true;
-
-        if (LooksLikeTopChromeFocus(snapshot.Context, surface))
-            return true;
-
-        return decision.RequiresLiveRuntimeRead || decision.Candidate is null;
+        return IsBrowserAddressBarSurface(snapshot.Context, surface);
     }
 
     private static bool LooksLikeTopChromeFocus(ForegroundContext context, BrowserSurfaceSnapshot surface)
@@ -1740,7 +2221,10 @@ public class AutoModeHandler
             surface.LocalizedControlType,
             surface.ClassName,
             surface.AutomationId,
-            surface.ElementName);
+            surface.ElementName,
+            surface.AriaProperties,
+            context.FocusedControlClass,
+            context.WindowClass);
 
     private static bool IsBrowserAddressBarSurface(
         string? processName,
@@ -1748,23 +2232,111 @@ public class AutoModeHandler
         string localizedControlType,
         string className,
         string automationId,
-        string elementName)
+        string elementName) =>
+        IsBrowserAddressBarSurface(
+            processName,
+            controlType,
+            localizedControlType,
+            className,
+            automationId,
+            elementName,
+            string.Empty,
+            string.Empty,
+            string.Empty);
+
+    private static bool IsBrowserAddressBarSurface(
+        string? processName,
+        string controlType,
+        string localizedControlType,
+        string className,
+        string automationId,
+        string elementName,
+        string ariaProperties,
+        string focusedControlClass,
+        string windowClass)
     {
         if (!IsBrowserAddressBarProcess(processName))
         {
             return false;
         }
 
-        string merged = $"{controlType} {localizedControlType} {className} {automationId} {elementName}".ToLowerInvariant();
-        if (merged.Contains("omnibox", StringComparison.Ordinal))
+        string merged = $"{controlType} {localizedControlType} {className} {automationId} {elementName} {ariaProperties}".ToLowerInvariant();
+        if (merged.Contains("omnibox", StringComparison.Ordinal)
+            || focusedControlClass.Contains("Omnibox", StringComparison.OrdinalIgnoreCase))
+        {
             return true;
+        }
+
+        if (HasUrlTypeAttribute(ariaProperties)
+            && IsBrowserChromeFocusedControl(focusedControlClass, windowClass))
+        {
+            return true;
+        }
 
         string normalizedName = (elementName ?? string.Empty).Trim().ToLowerInvariant();
         return BrowserAddressBarNameMarkers.Any(marker => string.Equals(normalizedName, marker, StringComparison.Ordinal));
     }
 
+    private static bool HasUrlTypeAttribute(string attributes)
+    {
+        if (string.IsNullOrWhiteSpace(attributes))
+            return false;
+
+        string normalized = attributes.ToLowerInvariant();
+        return normalized.Contains("type=url", StringComparison.Ordinal)
+               || normalized.Contains("type=\"url\"", StringComparison.Ordinal)
+               || normalized.Contains("type='url'", StringComparison.Ordinal);
+    }
+
+    private static bool IsBrowserChromeFocusedControl(string focusedControlClass, string windowClass)
+    {
+        if (string.Equals(focusedControlClass, "Chrome_RenderWidgetHostHWND", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return focusedControlClass.Contains("Omnibox", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(focusedControlClass, "Chrome_WidgetWin_1", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static bool IsGoogleDocsSurface(ForegroundContext context) =>
         IsGoogleDocsTitle(context.ProcessName, TryReadWindowTitle(context.Hwnd));
+
+    private static bool IsYouTubeBrowserPageSurface(ForegroundContext context, BrowserSurfaceSnapshot surface)
+    {
+        if (!IsBrowserAddressBarProcess(context.ProcessName))
+            return false;
+
+        if (!IsBrowserPageFocusedControl(context))
+            return false;
+
+        if (IsBrowserAddressBarSurface(context, surface))
+            return false;
+
+        return IsYouTubeTitle(context.ProcessName, TryReadWindowTitle(context.Hwnd));
+    }
+
+    private static bool ShouldUseYouTubeLiveBackspaceRoute(
+        WordSnapshot snapshot,
+        CandidateDecision decision,
+        BrowserSurfaceSnapshot surface)
+    {
+        if (!IsYouTubeBrowserPageSurface(snapshot.Context, surface))
+            return false;
+
+        if (!surface.HasTextPattern && string.IsNullOrWhiteSpace(snapshot.LiveWord))
+            return false;
+
+        return decision.Candidate is not null
+               || decision.RequiresLiveRuntimeRead
+               || !string.IsNullOrWhiteSpace(snapshot.LiveWord);
+    }
+
+    private static bool ShouldUseOneNoteNativeBackspaceRoute(WordSnapshot snapshot, CandidateDecision decision) =>
+        decision.Candidate is not null
+        && !decision.RequiresLiveRuntimeRead
+        && IsOneNoteSurface(snapshot.Context);
+
+    private static bool IsOneNoteSurface(ForegroundContext context) =>
+        IsOneNoteTitle(context.ProcessName, TryReadWindowTitle(context.Hwnd));
 
     /// <summary>
     /// Pure predicate: given a browser process name and a foreground window title,
@@ -1782,6 +2354,36 @@ public class AutoModeHandler
 
         string lowered = windowTitle.ToLowerInvariant();
         return GoogleDocsTitleMarkers.Any(marker => lowered.Contains(marker, StringComparison.Ordinal));
+    }
+
+    internal static bool IsYouTubeTitle(string? processName, string? windowTitle)
+    {
+        if (string.IsNullOrWhiteSpace(processName) || string.IsNullOrWhiteSpace(windowTitle))
+            return false;
+
+        if (!IsBrowserAddressBarProcess(processName))
+            return false;
+
+        string lowered = windowTitle.ToLowerInvariant();
+        return YouTubeTitleMarkers.Any(marker => lowered.Contains(marker, StringComparison.Ordinal));
+    }
+
+    internal static bool IsOneNoteTitle(string? processName, string? windowTitle)
+    {
+        if (!string.IsNullOrWhiteSpace(processName)
+            && processName.Contains("onenote", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (IsBrowserAddressBarProcess(processName))
+            return false;
+
+        if (string.IsNullOrWhiteSpace(windowTitle))
+            return false;
+
+        string lowered = windowTitle.ToLowerInvariant();
+        return OneNoteTitleMarkers.Any(marker => lowered.Contains(marker, StringComparison.Ordinal));
     }
 
     private static bool IsBrowserAddressBarProcess(string? processName) =>
@@ -1833,9 +2435,6 @@ public class AutoModeHandler
 
         if (hasWritableValuePattern)
             return ReplacementSafetyProfile.BrowserValuePatternSafe;
-
-        if (safeOnlyMode)
-            return ReplacementSafetyProfile.UnsafeSkip;
 
         return ReplacementSafetyProfile.UnsafeSkip;
     }

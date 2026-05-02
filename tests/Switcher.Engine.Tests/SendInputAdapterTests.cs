@@ -169,6 +169,45 @@ public class TextTargetCoordinatorPriorityTests
 
 public class KeyboardObserverBufferTests
 {
+    [Theory]
+    [InlineData(NativeMethods.VK_SPACE)]
+    [InlineData(NativeMethods.VK_RETURN)]
+    [InlineData(NativeMethods.VK_TAB)]
+    public void IsDelimiterKey_DefaultsToSpaceEnterTab(uint virtualKey)
+    {
+        var observer = new KeyboardObserver(new SettingsManager());
+
+        Assert.True(InvokeIsDelimiterKey(observer, virtualKey));
+    }
+
+    [Theory]
+    [InlineData(NativeMethods.VK_OEM_PERIOD)]
+    [InlineData(NativeMethods.VK_OEM_COMMA)]
+    [InlineData(NativeMethods.VK_OEM_1)]
+    [InlineData(NativeMethods.VK_OEM_2)]
+    [InlineData(NativeMethods.VK_OEM_7)]
+    [InlineData(0x31u)]
+    public void IsDelimiterKey_DoesNotTriggerOnPunctuation(uint virtualKey)
+    {
+        var observer = new KeyboardObserver(new SettingsManager());
+
+        Assert.False(InvokeIsDelimiterKey(observer, virtualKey));
+    }
+
+    [Fact]
+    public void IsDelimiterKey_RespectsDisabledBoundaryKeys()
+    {
+        var settings = new SettingsManager();
+        settings.Current.CorrectOnSpace = false;
+        settings.Current.CorrectOnEnter = false;
+        settings.Current.CorrectOnTab = false;
+        var observer = new KeyboardObserver(settings);
+
+        Assert.False(InvokeIsDelimiterKey(observer, NativeMethods.VK_SPACE));
+        Assert.False(InvokeIsDelimiterKey(observer, NativeMethods.VK_RETURN));
+        Assert.False(InvokeIsDelimiterKey(observer, NativeMethods.VK_TAB));
+    }
+
     [Fact]
     public void VkBufferToEN_PreservesDigitsAndOemKeys()
     {
@@ -422,6 +461,12 @@ public class KeyboardObserverBufferTests
     {
         var method = typeof(KeyboardObserver).GetMethod("VkBufferToEN", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
         return (string)method.Invoke(null, new object[] { buffer })!;
+    }
+
+    private static bool InvokeIsDelimiterKey(KeyboardObserver observer, uint virtualKey)
+    {
+        var method = typeof(KeyboardObserver).GetMethod("IsDelimiterKey", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        return (bool)method.Invoke(observer, [virtualKey])!;
     }
 
     private static string InvokePickBestEN(List<(uint scan, uint rawScan, uint vk, bool shift, uint flags)> buffer)

@@ -1,7 +1,7 @@
 # Switcher — Compatibility Matrix
 
-**Version:** 2.3.1  
-**Last updated:** 2026-04-25  
+**Version:** 2.3.2
+**Last updated:** 2026-05-02
 **Adapter priority:** NativeEditTargetAdapter → UIAutomationTargetAdapter
 
 ---
@@ -59,6 +59,8 @@
 |------------|-------------|---------|---------------|---------------|-----------|-------|
 | Chrome — `<input type="text">` | ValuePattern | UIAutomation | ✅ | ⚠️ Partial | ⚠️ Experimental | SetValue replaces entire field; cursor jumps to end |
 | Chrome — `<textarea>` | ValuePattern | UIAutomation | ✅ | ⚠️ Partial | ⚠️ Experimental | Same cursor-reset limitation |
+| Chrome — URL/address bar | Omnibox / ValuePattern varies | AddressBarLiveToken | ⚠️ Partial | — | ❌ Known issue | URL/address bar auto-correction is currently not reliable |
+| Chrome — YouTube comments | TextPattern/contenteditable varies | Browser page live read | ⚠️ Partial | — | ❌ Known issue | YouTube comment auto-correction is currently not reliable |
 | Chrome — `<div contenteditable>` | — | ❌ | ❌ | ❌ | ❌ | No ValuePattern; text never modified |
 | Edge — `<input type="text">` | ValuePattern | UIAutomation | ✅ | ⚠️ Partial | ⚠️ Experimental | Same as Chrome |
 | Firefox — any input | — | ❌ | ❌ | ❌ | ❌ | UIA accessibility may be disabled by default |

@@ -1641,7 +1641,8 @@ public static class CorrectionHeuristics
 
     private static readonly HashSet<string> AutoShortUaAllowlist = new(StringComparer.Ordinal)
     {
-        "ти", "па"
+        "ти", "ми", "ви", "це", "не", "на", "до", "за",
+        "як", "що", "чи", "ще", "ні", "па"
     };
 
     private static readonly HashSet<string> AutoSingleUaAllowlist = new(StringComparer.Ordinal)
@@ -1651,7 +1652,7 @@ public static class CorrectionHeuristics
 
     private static readonly HashSet<string> AutoShortEnAllowlist = new(StringComparer.Ordinal)
     {
-        "am", "oh", "uh", "ok"
+        "am", "oh", "uh", "ok", "we", "me", "go", "no", "up"
     };
 
     private static readonly HashSet<string> AutoSingleEnAllowlist = new(StringComparer.Ordinal)
@@ -1669,7 +1670,9 @@ public static class CorrectionHeuristics
 
     private static readonly HashSet<string> ProtectedShortLatinTokens = new(StringComparer.Ordinal)
     {
-        "wsl", "html", "json", "yaml", "xml", "css"
+        "wsl", "api", "cli", "css", "dns", "html", "json", "jwt",
+        "pdf", "png", "rpc", "sql", "ssh", "svg", "tcp", "udp",
+        "vpn", "xml", "yaml"
     };
 
     private static readonly string[] KeyboardRows =

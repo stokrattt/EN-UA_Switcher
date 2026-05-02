@@ -14,6 +14,7 @@ public class SwitcherEngine : IDisposable
     public DiagnosticsLogger Diagnostics { get; }
     public bool SafeHotkeysAvailable => _hotkeyManager?.IsRegistered ?? false;
     public string? SafeHotkeysError => _hotkeyManager?.LastRegistrationError;
+    public event Action? SettingsApplied;
 
     private readonly ForegroundContextProvider _contextProvider;
     private readonly TextTargetCoordinator _coordinator;
@@ -118,6 +119,8 @@ public class SwitcherEngine : IDisposable
             Diagnostics.Log("Switcher", "Hotkeys", "GlobalHotkeyManager", false, OperationType.SafeLastWord,
                 "", null, DiagnosticResult.Error, _hotkeyManager.LastRegistrationError);
         }
+
+        SettingsApplied?.Invoke();
     }
 
     // ─── Event handlers ──────────────────────────────────────────────────────

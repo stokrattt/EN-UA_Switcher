@@ -5,9 +5,11 @@ namespace Switcher.Core;
 
 public class AppSettings
 {
+    public string InterfaceLanguage { get; set; } = "Auto";
     public bool AutoModeEnabled { get; set; } = false;
     public bool SafeOnlyAutoMode { get; set; } = false;
     public bool ElectronUiaPathEnabled { get; set; } = false;
+    public bool DisableBrowserAddressBarAutoCorrection { get; set; } = false;
     public bool DiagnosticsEnabled { get; set; } = true;
     public bool SelectorDiagnosticsExportEnabled { get; set; } = false;
     public bool LearnedSelectorGateEnabled { get; set; } = false;
@@ -17,7 +19,7 @@ public class AppSettings
     public bool UndoOnBackspace { get; set; } = true;
     public bool CorrectOnSpace { get; set; } = true;
     public bool CorrectOnEnter { get; set; } = true;
-    public bool CorrectOnTab { get; set; } = false;
+    public bool CorrectOnTab { get; set; } = true;
     public bool CancelOnBackspace { get; set; } = true;
     public bool CancelOnLeftArrow { get; set; } = true;
     public List<string> ExcludedProcessNames { get; set; } = new();

@@ -14,6 +14,7 @@ public partial class DiagnosticsWindow : Window
     {
         _engine = engine;
         InitializeComponent();
+        ApplyLocalization();
         LogList.ItemsSource = _rows;
 
         // Load existing entries
@@ -39,7 +40,26 @@ public partial class DiagnosticsWindow : Window
     }
 
     private void UpdateCount() =>
-        TxtEntryCount.Text = $"{_rows.Count} entries";
+        TxtEntryCount.Text = AppLocalizer.Format(
+            "Diagnostics.EntryCount",
+            _engine.Settings.Current.InterfaceLanguage,
+            _rows.Count);
+
+    private void ApplyLocalization()
+    {
+        string language = _engine.Settings.Current.InterfaceLanguage;
+        Title = AppLocalizer.T("Window.DiagnosticsTitle", language);
+        AppLocalizer.Apply(this, language);
+
+        ColTime.Header = AppLocalizer.T("Diagnostics.Time", language);
+        ColProcess.Header = AppLocalizer.T("Diagnostics.Process", language);
+        ColAdapter.Header = AppLocalizer.T("Diagnostics.Adapter", language);
+        ColOperation.Header = AppLocalizer.T("Diagnostics.Operation", language);
+        ColOriginal.Header = AppLocalizer.T("Diagnostics.Original", language);
+        ColConverted.Header = AppLocalizer.T("Diagnostics.Converted", language);
+        ColResult.Header = AppLocalizer.T("Diagnostics.Result", language);
+        ColReason.Header = AppLocalizer.T("Diagnostics.Reason", language);
+    }
 
     private void BtnClear_Click(object sender, RoutedEventArgs e)
     {

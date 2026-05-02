@@ -17,6 +17,7 @@ internal enum ReplacementExecutionPath
     NativeSelectionTransaction,
     BrowserAddressBarBufferedBackspace,
     BrowserAddressBarLiveTokenBackspace,
+    BrowserPageLiveBackspace,
     BrowserValuePattern,
     ClipboardAssistedSelection,
     ElectronUiaBackspaceReplace,

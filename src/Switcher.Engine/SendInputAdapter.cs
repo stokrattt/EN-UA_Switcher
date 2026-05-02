@@ -145,6 +145,9 @@ public class SendInputAdapter : ITextTargetAdapter
         if (IsBrowserAddressBarContext(context))
             return false;
 
+        if (IsOneNoteContext(context))
+            return false;
+
         if (ElectronProcessCatalog.IsElectronProcess(context.ProcessName))
             return false;
 
@@ -160,6 +163,33 @@ public class SendInputAdapter : ITextTargetAdapter
         BrowserWordSelectionProcesses.Contains(context.ProcessName)
         && (BrowserAddressBarClasses.Contains(context.FocusedControlClass)
             || context.FocusedControlClass.Contains("Omnibox", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsOneNoteContext(ForegroundContext context)
+    {
+        if (!string.IsNullOrWhiteSpace(context.ProcessName)
+            && context.ProcessName.Contains("onenote", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (BrowserWordSelectionProcesses.Contains(context.ProcessName))
+            return false;
+
+        if (context.Hwnd == IntPtr.Zero)
+            return false;
+
+        try
+        {
+            var title = new System.Text.StringBuilder(512);
+            int written = NativeMethods.GetWindowText(context.Hwnd, title, title.Capacity);
+            return written > 0
+                   && title.ToString().Contains("OneNote", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     private static NativeMethods.INPUT[] BuildBackspaceReplaceInputs(int backCount, string replacement)
     {

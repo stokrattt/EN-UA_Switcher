@@ -1,5 +1,7 @@
 # EN-UA Switcher
 
+Automatic keyboard layout switcher and EN/UA text conversion utility for Windows.
+
 EN-UA Switcher is a Windows tray app for switching mistyped English/Ukrainian text.
 
 If you type `руддщ` instead of `hello`, EN-UA Switcher can fix it automatically after a delimiter or manually through global hotkeys.
@@ -143,6 +145,8 @@ Settings are stored in:
 
 ## Known Limitations
 
+- KNOWN ISSUE: CHROME URL BAR AND YOUTUBE COMMENTS DO NOT WORK RELIABLY IN AUTO MODE YET. WE ARE WORKING ON THIS FIX.
+- Regular Chrome page inputs that expose writable UI Automation still work; the current problem is specifically the Chrome URL/address bar and YouTube comment editor.
 - Auto Mode still works through injected input and replacement paths, so in some editors you may briefly see the word tail move or flicker
 - Browser and Electron behavior depends on what the target exposes through UI Automation, selection APIs, and clipboard behavior
 - Custom editors are much less predictable than native text boxes

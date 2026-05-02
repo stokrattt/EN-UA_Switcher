@@ -12,6 +12,11 @@ public partial class App : System.Windows.Application
     private const string SingleInstanceMutexName = @"Local\Switcher_EN_UA_SingleInstance";
 
     private NotifyIcon? _trayIcon;
+    private ContextMenuStrip? _trayMenu;
+    private ToolStripItem? _openItem;
+    private ToolStripMenuItem? _autoItem;
+    private ToolStripItem? _diagItem;
+    private ToolStripItem? _exitItem;
     private SwitcherEngine? _engine;
     private MainWindow? _mainWindow;
     private Mutex? _singleInstanceMutex;
@@ -37,6 +42,7 @@ public partial class App : System.Windows.Application
             _ownsSingleInstanceMutex = true;
 
             _engine = new SwitcherEngine();
+            _engine.SettingsApplied += UpdateTrayText;
             _engine.Start();
 
             BuildTrayIcon();
@@ -47,6 +53,8 @@ public partial class App : System.Windows.Application
         catch (Exception ex)
         {
             _engine?.Dispose();
+            if (_engine != null)
+                _engine.SettingsApplied -= UpdateTrayText;
             _engine = null;
             _trayIcon?.Dispose();
             _trayIcon = null;
@@ -71,12 +79,12 @@ public partial class App : System.Windows.Application
     {
         _trayIcon = new NotifyIcon
         {
-            Text = "EN-UA Switcher — Layout Corrector",
+            Text = "EN-UA Switcher",
             Visible = true,
             Icon = TrayIconHelper.CreateIcon()
         };
 
-        var menu = new ContextMenuStrip
+        _trayMenu = new ContextMenuStrip
         {
             Renderer = new MaterialMenuRenderer(),
             BackColor = Color.FromArgb(32, 29, 29),
@@ -88,42 +96,82 @@ public partial class App : System.Windows.Application
             AutoSize = true
         };
 
-        var openItem = menu.Items.Add("Open Settings");
-        openItem.Padding = new Padding(18, 10, 26, 10);
-        openItem.TextAlign = ContentAlignment.MiddleLeft;
-        openItem.Tag = "chevron";
-        openItem.Click += (_, _) => ShowMainWindow();
+        _openItem = _trayMenu.Items.Add(AppLocalizer.T("Tray.OpenSettings", _engine!.Settings.Current.InterfaceLanguage));
+        _openItem.Padding = new Padding(18, 10, 26, 10);
+        _openItem.TextAlign = ContentAlignment.MiddleLeft;
+        _openItem.Click += (_, _) => ShowMainWindow();
 
-        var autoItem = new ToolStripMenuItem("Auto Mode")
+        _autoItem = new ToolStripMenuItem(AppLocalizer.T("Tray.EnableAuto", _engine.Settings.Current.InterfaceLanguage))
         {
-            CheckOnClick = true,
+            CheckOnClick = false,
             Checked = _engine!.Settings.Current.AutoModeEnabled,
             ForeColor = Color.FromArgb(244, 247, 251),
             Padding = new Padding(18, 10, 26, 10)
         };
-        autoItem.TextAlign = ContentAlignment.MiddleLeft;
-        autoItem.Click += (_, _) =>
+        _autoItem.TextAlign = ContentAlignment.MiddleLeft;
+        _autoItem.Click += (_, _) =>
         {
-            _engine!.Settings.Current.AutoModeEnabled = autoItem.Checked;
+            _engine!.Settings.Current.AutoModeEnabled = !_engine.Settings.Current.AutoModeEnabled;
             _engine.ApplySettings();
-            UpdateTrayTooltip();
+            UpdateTrayText();
         };
-        menu.Items.Add(autoItem);
+        _trayMenu.Items.Add(_autoItem);
 
-        var diagItem = menu.Items.Add("View Diagnostics");
-        diagItem.Padding = new Padding(18, 10, 26, 10);
-        diagItem.TextAlign = ContentAlignment.MiddleLeft;
-        diagItem.Tag = "chevron";
-        diagItem.Click += (_, _) => ShowDiagnosticsWindow();
+        _diagItem = _trayMenu.Items.Add(AppLocalizer.T("Tray.ViewDiagnostics", _engine.Settings.Current.InterfaceLanguage));
+        _diagItem.Padding = new Padding(18, 10, 26, 10);
+        _diagItem.TextAlign = ContentAlignment.MiddleLeft;
+        _diagItem.Click += (_, _) => ShowDiagnosticsWindow();
 
-        var exitItem = menu.Items.Add("Exit");
-        exitItem.Padding = new Padding(18, 10, 18, 10);
-        exitItem.TextAlign = ContentAlignment.MiddleLeft;
-        exitItem.Click += (_, _) => ExitApp();
+        _exitItem = _trayMenu.Items.Add(AppLocalizer.T("Tray.Exit", _engine.Settings.Current.InterfaceLanguage));
+        _exitItem.Padding = new Padding(18, 10, 18, 10);
+        _exitItem.TextAlign = ContentAlignment.MiddleLeft;
+        _exitItem.Click += (_, _) => ExitApp();
 
-        ToolStripItem[] textItems = [openItem, autoItem, diagItem, exitItem];
+        ResizeTrayMenu();
+        _trayIcon.ContextMenuStrip = _trayMenu;
+        _trayIcon.DoubleClick += (_, _) => ShowMainWindow();
+        UpdateTrayText();
+    }
+
+    private void UpdateTrayText()
+    {
+        if (_trayIcon == null || _engine == null) return;
+        string language = _engine.Settings.Current.InterfaceLanguage;
+        bool autoEnabled = _engine.Settings.Current.AutoModeEnabled;
+        _trayIcon.Text = "EN-UA Switcher";
+
+        if (_openItem != null)
+            _openItem.Text = AppLocalizer.T("Tray.OpenSettings", language);
+
+        if (_autoItem != null)
+        {
+            _autoItem.Checked = autoEnabled;
+            _autoItem.Text = AppLocalizer.T(autoEnabled ? "Tray.DisableAuto" : "Tray.EnableAuto", language);
+        }
+
+        if (_diagItem != null)
+            _diagItem.Text = AppLocalizer.T("Tray.ViewDiagnostics", language);
+
+        if (_exitItem != null)
+            _exitItem.Text = AppLocalizer.T("Tray.Exit", language);
+
+        ResizeTrayMenu();
+    }
+
+    private void ResizeTrayMenu()
+    {
+        if (_trayMenu == null
+            || _openItem == null
+            || _autoItem == null
+            || _diagItem == null
+            || _exitItem == null)
+        {
+            return;
+        }
+
+        ToolStripItem[] textItems = [_openItem, _autoItem, _diagItem, _exitItem];
         int textWidth = textItems
-            .Max(item => TextRenderer.MeasureText(item.Text ?? string.Empty, menu.Font).Width);
+            .Max(item => TextRenderer.MeasureText(item.Text ?? string.Empty, _trayMenu.Font).Width);
         int itemWidth = textWidth + 44;
         foreach (ToolStripItem item in textItems)
         {
@@ -131,25 +179,8 @@ public partial class App : System.Windows.Application
             item.Width = itemWidth;
         }
 
-        menu.AutoSize = false;
-        menu.Width = itemWidth + 12;
-
-        _trayIcon.ContextMenuStrip = menu;
-        _trayIcon.DoubleClick += (_, _) => ShowMainWindow();
-        UpdateTrayTooltip();
-    }
-
-    private void UpdateTrayTooltip()
-    {
-        if (_trayIcon == null || _engine == null) return;
-        bool autoEnabled = _engine.Settings.Current.AutoModeEnabled;
-        bool safeOnly = _engine.Settings.Current.SafeOnlyAutoMode;
-        bool hotkeysReady = _engine.SafeHotkeysAvailable;
-        _trayIcon.Text = autoEnabled
-            ? (hotkeysReady
-                ? (safeOnly ? "EN-UA Switcher — Auto safe-only, hotkeys ON" : "EN-UA Switcher — Auto broad, hotkeys ON")
-                : (safeOnly ? "EN-UA Switcher — Auto safe-only, hotkeys unavailable" : "EN-UA Switcher — Auto broad, hotkeys unavailable"))
-            : (hotkeysReady ? "EN-UA Switcher — Auto OFF, hotkeys ON" : "EN-UA Switcher — Auto OFF, hotkeys unavailable");
+        _trayMenu.AutoSize = false;
+        _trayMenu.Width = itemWidth + 12;
     }
 
     private void ShowMainWindow()
@@ -178,6 +209,8 @@ public partial class App : System.Windows.Application
     {
         _engine?.Settings.Save();
         _engine?.Stop();
+        if (_engine != null)
+            _engine.SettingsApplied -= UpdateTrayText;
         _engine?.Dispose();
         _trayIcon?.Dispose();
         Current.Shutdown();
@@ -187,6 +220,8 @@ public partial class App : System.Windows.Application
     {
         _engine?.Settings.Save();
         _engine?.Stop();
+        if (_engine != null)
+            _engine.SettingsApplied -= UpdateTrayText;
         _engine?.Dispose();
         _trayIcon?.Dispose();
         if (_ownsSingleInstanceMutex)

@@ -564,6 +564,24 @@ public class AutoModeHandlerPunctuationRegressionTests
         Assert.Equal("привіт.", candidate.ConvertedText);
     }
 
+    [Fact]
+    public void TryEvaluateVisibleTokenCandidate_PreservesLiteralComma_WhenCoreWordIsBetter()
+    {
+        CorrectionCandidate candidate = InvokeTryEvaluateVisibleTokenCandidate("ghbdsn,");
+
+        Assert.Equal("ghbdsn,", candidate.OriginalText);
+        Assert.Equal("привіт,", candidate.ConvertedText);
+    }
+
+    [Theory]
+    [InlineData("юля,")]
+    [InlineData("god.")]
+    [InlineData("ти?")]
+    public void TryEvaluateVisibleTokenCandidate_SkipsAlreadyCorrectWordsWithLiteralPunctuation(string token)
+    {
+        Assert.Null(InvokeTryEvaluateVisibleTokenCandidateOrNull(token));
+    }
+
     private static CorrectionCandidate InvokeApplyVisibleTrailingPunctuation(CorrectionCandidate candidate, string visibleSuffix)
     {
         var method = typeof(AutoModeHandler)
@@ -582,12 +600,17 @@ public class AutoModeHandlerPunctuationRegressionTests
 
     private static CorrectionCandidate InvokeTryEvaluateVisibleTokenCandidate(string token)
     {
+        var candidate = InvokeTryEvaluateVisibleTokenCandidateOrNull(token);
+        Assert.NotNull(candidate);
+        return candidate!;
+    }
+
+    private static CorrectionCandidate? InvokeTryEvaluateVisibleTokenCandidateOrNull(string token)
+    {
         var method = typeof(AutoModeHandler)
             .GetMethod("TryEvaluateVisibleTokenCandidate", BindingFlags.NonPublic | BindingFlags.Static)!;
 
-        var candidate = (CorrectionCandidate?)method.Invoke(null, [token]);
-        Assert.NotNull(candidate);
-        return candidate!;
+        return (CorrectionCandidate?)method.Invoke(null, [token]);
     }
 
     [Fact]
@@ -1281,8 +1304,10 @@ public class AutoModeHandlerRegressionTests
     [Theory]
     [InlineData("chrome", "ControlType.Edit", "edit", "Chrome_OmniboxView", "", "")]
     [InlineData("msedge", "ControlType.Edit", "edit", "", "", "Address and search bar")]
-    [InlineData("brave", "ControlType.Edit", "edit", "", "", "Search or enter address")]
+    [InlineData("brave", "ControlType.Edit", "edit", "", "", "Search Google or type a URL")]
     [InlineData("chrome", "ControlType.Edit", "edit", "", "", "Адресний рядок")]
+    [InlineData("chrome", "ControlType.Edit", "edit", "", "", "Пошук Google або введіть URL-адресу")]
+    [InlineData("chrome", "ControlType.Edit", "edit", "", "", "Шукайте в Google або введіть URL-адресу")]
     public void IsBrowserAddressBarSurface_RecognizesBrowserOmnibox(
         string processName,
         string controlType,
@@ -1302,6 +1327,8 @@ public class AutoModeHandlerRegressionTests
     [Theory]
     [InlineData("notepad", "ControlType.Edit", "edit", "Chrome_OmniboxView", "", "")]
     [InlineData("chrome", "ControlType.Edit", "edit", "", "", "Address")]
+    [InlineData("chrome", "ControlType.Edit", "edit", "", "", "URL")]
+    [InlineData("chrome", "ControlType.Edit", "edit", "", "", "Search the web")]
     [InlineData("chrome", "ControlType.Edit", "edit", "", "", "Street address")]
     [InlineData("chrome", "ControlType.Edit", "edit", "", "", "Address and search bar for project field")]
     [InlineData("chrome", "ControlType.Edit", "edit", "", "", "Search or enter address here")]
@@ -1319,6 +1346,231 @@ public class AutoModeHandlerRegressionTests
         bool isAddressBar = (bool)method.Invoke(null, [processName, controlType, localizedControlType, className, automationId, elementName])!;
 
         Assert.False(isAddressBar);
+    }
+
+    [Fact]
+    public void ShouldUseBrowserPageClipboardFallback_BlocksChromePageWithoutWritableValuePattern()
+    {
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "UA",
+            liveWord: "",
+            visibleWord: "руддщ",
+            wordEn: "hello",
+            wordUa: "руддщ",
+            analysisWordEn: "hello",
+            analysisWordUa: "руддщ",
+            rawDebug: "page",
+            originalDisplay: "руддщ",
+            techDetail: "keys=5 rec=0 drop=0 seq=0 lay=UA",
+            approxWordLength: 5,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+        var decision = new CandidateDecision(
+            new CorrectionCandidate("руддщ", "hello", CorrectionDirection.UaToEn, 0.95, "buffer"),
+            CandidateSource.PrimaryHeuristics,
+            RequiresLiveRuntimeRead: false,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "buffer candidate");
+        object surface = CreateBrowserSurfaceSnapshot(
+            hasWritableValuePattern: false,
+            className: "Chrome_RenderWidgetHostHWND",
+            elementName: "YouTube comment",
+            unsafeCustomEditorLike: true);
+
+        Assert.False(InvokeShouldUseBrowserPageClipboardFallback(snapshot, decision, surface));
+    }
+
+    [Fact]
+    public void ShouldUseBrowserPageClipboardFallback_BlocksWritableBrowserPageBeforeValuePattern()
+    {
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "UA",
+            liveWord: "",
+            visibleWord: "руддщ",
+            wordEn: "hello",
+            wordUa: "руддщ",
+            analysisWordEn: "hello",
+            analysisWordUa: "руддщ",
+            rawDebug: "page",
+            originalDisplay: "руддщ",
+            techDetail: "keys=5 rec=0 drop=0 seq=0 lay=UA",
+            approxWordLength: 5,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+        var decision = new CandidateDecision(
+            new CorrectionCandidate("руддщ", "hello", CorrectionDirection.UaToEn, 0.95, "buffer"),
+            CandidateSource.PrimaryHeuristics,
+            RequiresLiveRuntimeRead: false,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "buffer candidate");
+        object writablePage = CreateBrowserSurfaceSnapshot(
+            hasWritableValuePattern: true,
+            className: "Chrome_RenderWidgetHostHWND",
+            elementName: "Comment",
+            unsafeCustomEditorLike: false);
+
+        Assert.False(InvokeShouldUseBrowserPageClipboardFallback(snapshot, decision, writablePage));
+    }
+
+    [Fact]
+    public void ShouldUseBrowserPageClipboardFallback_DoesNotProbeEveryCorrectBrowserWord()
+    {
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "UA",
+            liveWord: "",
+            visibleWord: "сьогодні",
+            wordEn: "c]ujlys",
+            wordUa: "сьогодні",
+            analysisWordEn: "c]ujlys",
+            analysisWordUa: "сьогодні",
+            rawDebug: "page",
+            originalDisplay: "сьогодні",
+            techDetail: "keys=8 rec=0 drop=0 seq=0 lay=UA",
+            approxWordLength: 8,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+        var decision = new CandidateDecision(
+            Candidate: null,
+            Source: CandidateSource.None,
+            RequiresLiveRuntimeRead: true,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "no buffered conversion");
+        object page = CreateBrowserSurfaceSnapshot(
+            hasWritableValuePattern: true,
+            className: "Chrome_RenderWidgetHostHWND",
+            elementName: "Comment",
+            unsafeCustomEditorLike: false);
+
+        Assert.False(InvokeShouldUseBrowserPageClipboardFallback(snapshot, decision, page));
+    }
+
+    [Fact]
+    public void ShouldUseBrowserPageClipboardFallback_BlocksWhenChromeBufferNeedsLiveDiscovery()
+    {
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "UA",
+            liveWord: "",
+            visibleWord: "",
+            wordEn: "45678",
+            wordUa: "45678",
+            analysisWordEn: "45678",
+            analysisWordUa: "45678",
+            rawDebug: "chrome scan noise",
+            originalDisplay: "45678",
+            techDetail: "keys=5 rec=0 drop=0 seq=4 lay=UA",
+            approxWordLength: 5,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 4);
+        var decision = new CandidateDecision(
+            Candidate: null,
+            Source: CandidateSource.None,
+            RequiresLiveRuntimeRead: true,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "needs live read");
+        object page = CreateBrowserSurfaceSnapshot(
+            hasWritableValuePattern: true,
+            className: "Chrome_RenderWidgetHostHWND",
+            elementName: "Comment",
+            unsafeCustomEditorLike: false);
+
+        Assert.False(InvokeShouldUseBrowserPageClipboardFallback(snapshot, decision, page));
+    }
+
+    [Fact]
+    public void ShouldUseBrowserPageClipboardFallback_BlocksAddressBar()
+    {
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "UA",
+            liveWord: "",
+            visibleWord: "руддщ",
+            wordEn: "hello",
+            wordUa: "руддщ",
+            analysisWordEn: "hello",
+            analysisWordUa: "руддщ",
+            rawDebug: "page",
+            originalDisplay: "руддщ",
+            techDetail: "keys=5 rec=0 drop=0 seq=0 lay=UA",
+            approxWordLength: 5,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+        var decision = new CandidateDecision(
+            new CorrectionCandidate("руддщ", "hello", CorrectionDirection.UaToEn, 0.95, "buffer"),
+            CandidateSource.PrimaryHeuristics,
+            RequiresLiveRuntimeRead: false,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "buffer candidate");
+        object addressBar = CreateBrowserSurfaceSnapshot(
+            hasWritableValuePattern: false,
+            className: "Chrome_OmniboxView",
+            elementName: "Address and search bar",
+            unsafeCustomEditorLike: false);
+
+        Assert.False(InvokeShouldUseBrowserPageClipboardFallback(snapshot, decision, addressBar));
     }
 
     [Fact]
@@ -1415,7 +1667,7 @@ public class AutoModeHandlerRegressionTests
     }
 
     [Fact]
-    public void ShouldUseBrowserWordTokenRoute_ChromeLiveReadNoise_RoutesEvenWhenSurfaceSnapshotIsNotAddressBar()
+    public void ShouldUseBrowserWordTokenRoute_ChromeLiveReadNoise_DoesNotRoutePageSurface()
     {
         var context = new ForegroundContext(
             IntPtr.Zero,
@@ -1456,11 +1708,11 @@ public class AutoModeHandlerRegressionTests
             elementName: "page document",
             unsafeCustomEditorLike: true);
 
-        Assert.True(InvokeShouldUseBrowserWordTokenRoute(snapshot, decision, surface));
+        Assert.False(InvokeShouldUseBrowserWordTokenRoute(snapshot, decision, surface));
     }
 
     [Fact]
-    public void ShouldUseBrowserWordTokenRoute_ChromeWithoutBufferedCandidate_RoutesEvenWithoutScanNoise()
+    public void ShouldUseBrowserWordTokenRoute_ChromeWithoutBufferedCandidate_DoesNotRoutePageSurface()
     {
         var context = new ForegroundContext(
             IntPtr.Zero,
@@ -1501,7 +1753,7 @@ public class AutoModeHandlerRegressionTests
             elementName: "page document",
             unsafeCustomEditorLike: true);
 
-        Assert.True(InvokeShouldUseBrowserWordTokenRoute(snapshot, decision, surface));
+        Assert.False(InvokeShouldUseBrowserWordTokenRoute(snapshot, decision, surface));
     }
 
     [Fact]
@@ -1550,7 +1802,7 @@ public class AutoModeHandlerRegressionTests
     }
 
     [Fact]
-    public void ShouldUseBrowserWordTokenRoute_TopChromeFocus_RoutesWithoutOldOmniboxHwnd()
+    public void ShouldUseBrowserWordTokenRoute_TopChromeFocus_DoesNotRouteWithoutStrongAddressBarSignal()
     {
         var context = new ForegroundContext(
             IntPtr.Zero,
@@ -1591,7 +1843,144 @@ public class AutoModeHandlerRegressionTests
             elementName: "",
             unsafeCustomEditorLike: false);
 
+        Assert.False(InvokeShouldUseBrowserWordTokenRoute(snapshot, decision, surface));
+    }
+
+    [Fact]
+    public void ShouldUseBrowserWordTokenRoute_AddressBarName_Routes()
+    {
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_OmniboxView");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_OmniboxView",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "UA",
+            liveWord: "",
+            visibleWord: "руддщ",
+            wordEn: "hello",
+            wordUa: "руддщ",
+            analysisWordEn: "hello",
+            analysisWordUa: "руддщ",
+            rawDebug: "omnibox",
+            originalDisplay: "руддщ",
+            techDetail: "keys=5 rec=0 drop=0 seq=0 lay=UA",
+            approxWordLength: 5,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+        var decision = new CandidateDecision(
+            new CorrectionCandidate("руддщ", "hello", CorrectionDirection.UaToEn, 0.95, "buffer"),
+            CandidateSource.PrimaryHeuristics,
+            RequiresLiveRuntimeRead: false,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "buffer candidate");
+        object surface = CreateBrowserSurfaceSnapshot(
+            hasWritableValuePattern: true,
+            className: "Chrome_OmniboxView",
+            elementName: "Address and search bar",
+            unsafeCustomEditorLike: false);
+
         Assert.True(InvokeShouldUseBrowserWordTokenRoute(snapshot, decision, surface));
+    }
+
+    [Fact]
+    public void ShouldUseBrowserWordTokenRoute_TypeUrlInBrowserChrome_Routes()
+    {
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_WidgetWin_1");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_WidgetWin_1",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "UA",
+            liveWord: "",
+            visibleWord: "руддщ",
+            wordEn: "hello",
+            wordUa: "руддщ",
+            analysisWordEn: "hello",
+            analysisWordUa: "руддщ",
+            rawDebug: "type-url",
+            originalDisplay: "руддщ",
+            techDetail: "keys=5 rec=0 drop=0 seq=0 lay=UA",
+            approxWordLength: 5,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+        var decision = new CandidateDecision(
+            new CorrectionCandidate("руддщ", "hello", CorrectionDirection.UaToEn, 0.95, "buffer"),
+            CandidateSource.PrimaryHeuristics,
+            RequiresLiveRuntimeRead: false,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "buffer candidate");
+        object surface = CreateBrowserSurfaceSnapshot(
+            hasWritableValuePattern: true,
+            className: string.Empty,
+            elementName: string.Empty,
+            unsafeCustomEditorLike: false,
+            ariaProperties: "type=url");
+
+        Assert.True(InvokeShouldUseBrowserWordTokenRoute(snapshot, decision, surface));
+    }
+
+    [Fact]
+    public void ShouldUseBrowserWordTokenRoute_TypeUrlInPageField_DoesNotRoute()
+    {
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "UA",
+            liveWord: "",
+            visibleWord: "",
+            wordEn: "kengu",
+            wordUa: "лутпг",
+            analysisWordEn: "kengu",
+            analysisWordUa: "лутпг",
+            rawDebug: "page-type-url",
+            originalDisplay: "лутпг",
+            techDetail: "keys=5 rec=0 drop=0 seq=0 lay=UA",
+            approxWordLength: 5,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+        var decision = new CandidateDecision(
+            Candidate: null,
+            Source: CandidateSource.None,
+            RequiresLiveRuntimeRead: true,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "needs live read");
+        object surface = CreateBrowserSurfaceSnapshot(
+            hasWritableValuePattern: true,
+            className: "Chrome_RenderWidgetHostHWND",
+            elementName: "Website URL",
+            unsafeCustomEditorLike: false,
+            ariaProperties: "type=url");
+
+        Assert.False(InvokeShouldUseBrowserWordTokenRoute(snapshot, decision, surface));
     }
 
     [Fact]
@@ -1642,6 +2031,184 @@ public class AutoModeHandlerRegressionTests
     public void TryBuildAddressBarLiveTokenCandidate_SkipsCorrectUkrainianLastWord()
     {
         Assert.Null(InvokeTryBuildAddressBarLiveTokenCandidateOrNull("ghbdsn справи", "chrome"));
+    }
+
+    [Theory]
+    [InlineData("ghbdsn", "ghbdsn", true)]
+    [InlineData(" ghbdsn ", "ghbdsn", false)]
+    [InlineData("foo ghbdsn", "ghbdsn", false)]
+    [InlineData("foo/ghbdsn", "ghbdsn", false)]
+    public void IsExactSelectedAddressBarToken_DetectsWhenSelectionWouldEatPrefix(
+        string selectedText,
+        string liveToken,
+        bool expected)
+    {
+        Assert.Equal(expected, InvokeIsExactSelectedAddressBarToken(selectedText, liveToken));
+    }
+
+    [Theory]
+    [InlineData("f", "а")]
+    [InlineData("F", "А")]
+    [InlineData("d", "в")]
+    [InlineData("D", "В")]
+    public void TryBuildRecentSwitchSingleLetterCandidate_ConvertsAAfterUaToEnSwitch(
+        string original,
+        string converted)
+    {
+        var context = new ForegroundContext(
+            new IntPtr(101),
+            new IntPtr(202),
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "EN",
+            liveWord: "",
+            visibleWord: original,
+            wordEn: original,
+            wordUa: converted,
+            analysisWordEn: original,
+            analysisWordUa: converted,
+            rawDebug: "test",
+            originalDisplay: original,
+            techDetail: "keys=1 rec=0 drop=0 seq=0 lay=EN",
+            approxWordLength: 1,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+        object recentSwitch = CreateAutoSwitchState(
+            CorrectionDirection.UaToEn,
+            DateTime.UtcNow.AddSeconds(-1),
+            context);
+
+        CorrectionCandidate? candidate = InvokeTryBuildRecentSwitchSingleLetterCandidate(
+            snapshot,
+            approxWordLength: 1,
+            recentSwitch,
+            DateTime.UtcNow);
+
+        Assert.NotNull(candidate);
+        Assert.Equal(original, candidate!.OriginalText);
+        Assert.Equal(converted, candidate.ConvertedText);
+        Assert.Equal(CorrectionDirection.EnToUa, candidate.Direction);
+    }
+
+    [Fact]
+    public void TryBuildRecentSwitchSingleLetterCandidate_RequiresRecentUaToEnSwitch()
+    {
+        var context = new ForegroundContext(
+            new IntPtr(101),
+            new IntPtr(202),
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "EN",
+            liveWord: "",
+            visibleWord: "f",
+            wordEn: "f",
+            wordUa: "а",
+            analysisWordEn: "f",
+            analysisWordUa: "а",
+            rawDebug: "test",
+            originalDisplay: "f",
+            techDetail: "keys=1 rec=0 drop=0 seq=0 lay=EN",
+            approxWordLength: 1,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+        object wrongDirection = CreateAutoSwitchState(
+            CorrectionDirection.EnToUa,
+            DateTime.UtcNow.AddSeconds(-1),
+            context);
+        object stale = CreateAutoSwitchState(
+            CorrectionDirection.UaToEn,
+            DateTime.UtcNow.AddMinutes(-1),
+            context);
+
+        Assert.Null(InvokeTryBuildRecentSwitchSingleLetterCandidate(snapshot, 1, wrongDirection, DateTime.UtcNow));
+        Assert.Null(InvokeTryBuildRecentSwitchSingleLetterCandidate(snapshot, 1, stale, DateTime.UtcNow));
+    }
+
+    [Fact]
+    public void TryBuildRecentSwitchSingleLetterCandidate_DoesNotEnableGeneralOneLetterCorrection()
+    {
+        var context = new ForegroundContext(
+            new IntPtr(101),
+            new IntPtr(202),
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "EN",
+            liveWord: "",
+            visibleWord: "g",
+            wordEn: "g",
+            wordUa: "п",
+            analysisWordEn: "g",
+            analysisWordUa: "п",
+            rawDebug: "test",
+            originalDisplay: "d",
+            techDetail: "keys=1 rec=0 drop=0 seq=0 lay=EN",
+            approxWordLength: 1,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+        object recentSwitch = CreateAutoSwitchState(
+            CorrectionDirection.UaToEn,
+            DateTime.UtcNow.AddSeconds(-1),
+            context);
+
+        Assert.Null(InvokeTryBuildRecentSwitchSingleLetterCandidate(snapshot, 1, recentSwitch, DateTime.UtcNow));
+        Assert.Null(InvokeTryBuildRecentSwitchSingleLetterCandidate(snapshot, 2, recentSwitch, DateTime.UtcNow));
+    }
+
+    [Fact]
+    public void RecentSwitchSingleLetterSurface_AllowsBrowserPageButBlocksAddressBar()
+    {
+        var pageContext = new ForegroundContext(
+            new IntPtr(101),
+            new IntPtr(202),
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+        var addressContext = new ForegroundContext(
+            new IntPtr(101),
+            new IntPtr(202),
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_OmniboxView");
+        object pageSurface = CreateBrowserSurfaceSnapshot(
+            hasWritableValuePattern: true,
+            className: "",
+            elementName: "Comment",
+            unsafeCustomEditorLike: false);
+        object addressSurface = CreateBrowserSurfaceSnapshot(
+            hasWritableValuePattern: true,
+            className: "Chrome_OmniboxView",
+            elementName: "Address and search bar",
+            unsafeCustomEditorLike: false,
+            ariaProperties: "type=url");
+
+        Assert.True(InvokeIsRecentSwitchSingleLetterSurface(pageContext, pageSurface));
+        Assert.False(InvokeIsRecentSwitchSingleLetterSurface(addressContext, addressSurface));
     }
 
     [Fact]
@@ -1809,6 +2376,7 @@ public class AutoModeHandlerRegressionTests
     [InlineData(nameof(ReplacementExecutionPath.NativeSelectionTransaction))]
     [InlineData(nameof(ReplacementExecutionPath.BrowserAddressBarBufferedBackspace))]
     [InlineData(nameof(ReplacementExecutionPath.BrowserAddressBarLiveTokenBackspace))]
+    [InlineData(nameof(ReplacementExecutionPath.BrowserPageLiveBackspace))]
     public void ShouldExecuteImmediately_BackspaceSendInputPaths_DoNotWaitForThreadPool(string pathName)
     {
         var path = Enum.Parse<ReplacementExecutionPath>(pathName);
@@ -1910,6 +2478,53 @@ public class AutoModeHandlerRegressionTests
     }
 
     [Fact]
+    public void ShouldExecuteImmediately_BrowserPageExactClipboard_DoesNotRunInline()
+    {
+        var context = new ForegroundContext(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            "chrome",
+            123,
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND");
+        var snapshot = (WordSnapshot)CreateWordSnapshot(
+            context,
+            processName: "chrome",
+            controlClass: "Chrome_RenderWidgetHostHWND",
+            windowClass: "Chrome_WidgetWin_1",
+            layoutTag: "UA",
+            liveWord: "",
+            visibleWord: "руддщ",
+            wordEn: "hello",
+            wordUa: "руддщ",
+            analysisWordEn: "hello",
+            analysisWordUa: "руддщ",
+            rawDebug: "test",
+            originalDisplay: "руддщ",
+            techDetail: "keys=5 rec=0 drop=0 seq=0 lay=UA",
+            approxWordLength: 5,
+            recoveryCount: 0,
+            droppedKeyCount: 0,
+            sequentialScanCount: 0);
+        var decision = new CandidateDecision(
+            new CorrectionCandidate("руддщ", "hello", CorrectionDirection.UaToEn, 0.95, "buffer"),
+            CandidateSource.PrimaryHeuristics,
+            RequiresLiveRuntimeRead: true,
+            SelectorFeatures: null,
+            LearnedDecision: null,
+            Reason: "browser page clipboard verifies live slice");
+        var plan = new ReplacementPlan(
+            snapshot,
+            decision,
+            ReplacementSafetyProfile.BrowserBestEffort,
+            ReplacementExecutionPath.ClipboardAssistedSelection,
+            "ClipboardSelectionTransaction",
+            "profile=BrowserBestEffort path=ClipboardAssistedSelection surface=browser-page-exact-clipboard");
+
+        Assert.False(InvokeShouldExecuteImmediately(plan));
+    }
+
+    [Fact]
     public void ResolveOriginalDisplay_PrefersLiveWord_WhenAvailable()
     {
         string original = InvokeResolveOriginalDisplay(
@@ -1970,6 +2585,19 @@ public class AutoModeHandlerRegressionTests
         object profile = method.Invoke(
             null,
             [true, false, true, true])!;
+
+        Assert.Equal(ReplacementSafetyProfile.UnsafeSkip, profile);
+    }
+
+    [Fact]
+    public void ClassifyReplacementSafetyProfile_BrowserWithoutWritableValuePattern_SkipsClipboardFallback()
+    {
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("ClassifyReplacementSafetyProfile", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        object profile = method.Invoke(
+            null,
+            [true, false, false, false])!;
 
         Assert.Equal(ReplacementSafetyProfile.UnsafeSkip, profile);
     }
@@ -2037,7 +2665,9 @@ public class AutoModeHandlerRegressionTests
         bool hasWritableValuePattern,
         string className,
         string elementName,
-        bool unsafeCustomEditorLike)
+        bool unsafeCustomEditorLike,
+        string ariaProperties = "",
+        bool hasTextPattern = false)
     {
         Type surfaceType = typeof(AutoModeHandler).GetNestedType("BrowserSurfaceSnapshot", BindingFlags.NonPublic)!;
         return Activator.CreateInstance(
@@ -2048,16 +2678,32 @@ public class AutoModeHandlerRegressionTests
             [
                 true,
                 hasWritableValuePattern,
-                false,
+                hasTextPattern,
                 "ControlType.Edit",
                 "edit",
                 className,
                 string.Empty,
                 elementName,
+                ariaProperties,
                 unsafeCustomEditorLike,
-                $"test-surface class={className} name={elementName}"
+                $"test-surface class={className} name={elementName} aria={ariaProperties}"
             ],
             culture: null)!;
+    }
+
+    private static bool InvokeShouldUseBrowserPageClipboardFallback(
+        WordSnapshot snapshot,
+        CandidateDecision decision,
+        object surface)
+    {
+        Type surfaceType = typeof(AutoModeHandler).GetNestedType("BrowserSurfaceSnapshot", BindingFlags.NonPublic)!;
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod(
+                "ShouldUseBrowserPageClipboardFallback",
+                BindingFlags.NonPublic | BindingFlags.Static,
+                [typeof(WordSnapshot), typeof(CandidateDecision), surfaceType])!;
+
+        return (bool)method.Invoke(null, [snapshot, decision, surface])!;
     }
 
     private static string InvokeResolveOriginalDisplay(
@@ -2134,6 +2780,59 @@ public class AutoModeHandlerRegressionTests
             .GetMethod("TryBuildAddressBarLiveTokenCandidate", BindingFlags.NonPublic | BindingFlags.Static)!;
 
         return method.Invoke(null, [text, processName]);
+    }
+
+    private static bool InvokeIsExactSelectedAddressBarToken(string selectedText, string liveToken)
+    {
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("IsExactSelectedAddressBarToken", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        return (bool)method.Invoke(null, [selectedText, liveToken])!;
+    }
+
+    private static CorrectionCandidate? InvokeTryBuildRecentSwitchSingleLetterCandidate(
+        WordSnapshot snapshot,
+        int approxWordLength,
+        object recentSwitch,
+        DateTime nowUtc)
+    {
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod("TryBuildRecentSwitchSingleLetterCandidate", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        return (CorrectionCandidate?)method.Invoke(null, [snapshot, approxWordLength, recentSwitch, nowUtc]);
+    }
+
+    private static bool InvokeIsRecentSwitchSingleLetterSurface(ForegroundContext context, object surface)
+    {
+        Type surfaceType = typeof(AutoModeHandler).GetNestedType("BrowserSurfaceSnapshot", BindingFlags.NonPublic)!;
+        MethodInfo method = typeof(AutoModeHandler)
+            .GetMethod(
+                "IsRecentSwitchSingleLetterSurface",
+                BindingFlags.NonPublic | BindingFlags.Static,
+                [typeof(ForegroundContext), surfaceType])!;
+
+        return (bool)method.Invoke(null, [context, surface])!;
+    }
+
+    private static object CreateAutoSwitchState(
+        CorrectionDirection direction,
+        DateTime atUtc,
+        ForegroundContext context)
+    {
+        Type autoSwitchType = typeof(AutoModeHandler).GetNestedType("AutoSwitchState", BindingFlags.NonPublic)!;
+        return Activator.CreateInstance(
+            autoSwitchType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args:
+            [
+                direction,
+                atUtc,
+                context.ProcessId,
+                context.Hwnd,
+                context.FocusedControlHwnd
+            ],
+            culture: null)!;
     }
 
     private static object CreateWordSnapshot(
@@ -2385,5 +3084,46 @@ public class AutoModeHandlerGoogleDocsRegressionTests
     public void IsGoogleDocsTitle_HandlesNullAndEmptyInputsSafely(string? processName, string? title)
     {
         Assert.False(AutoModeHandler.IsGoogleDocsTitle(processName, title));
+    }
+}
+
+public class AutoModeHandlerTargetedSurfaceRegressionTests
+{
+    [Theory]
+    [InlineData("chrome", "Some video - YouTube - Google Chrome")]
+    [InlineData("msedge", "Watch later - YouTube - Microsoft Edge")]
+    [InlineData("brave", "youtube.com/watch?v=abc - Brave")]
+    public void IsYouTubeTitle_RecognizesChromiumYouTubeTabs(string processName, string title)
+    {
+        Assert.True(AutoModeHandler.IsYouTubeTitle(processName, title));
+    }
+
+    [Theory]
+    [InlineData("notepad", "Some video - YouTube")]
+    [InlineData("chrome", "GitHub - Google Chrome")]
+    [InlineData("code", "YouTube notes.md - Visual Studio Code")]
+    [InlineData(null, "YouTube - Google Chrome")]
+    [InlineData("chrome", null)]
+    public void IsYouTubeTitle_DoesNotMatchOutsideBrowserYouTubeTabs(string? processName, string? title)
+    {
+        Assert.False(AutoModeHandler.IsYouTubeTitle(processName, title));
+    }
+
+    [Theory]
+    [InlineData("onenote", "Work Log - OneNote")]
+    [InlineData("ONENOTE", "Notes")]
+    [InlineData("ApplicationFrameHost", "Work Log 2025 - 2026 - OneNote")]
+    public void IsOneNoteTitle_RecognizesDesktopAndStoreOneNote(string processName, string title)
+    {
+        Assert.True(AutoModeHandler.IsOneNoteTitle(processName, title));
+    }
+
+    [Theory]
+    [InlineData("chrome", "OneNote web clipper - Google Chrome")]
+    [InlineData("notepad", "meeting notes.txt")]
+    [InlineData(null, null)]
+    public void IsOneNoteTitle_DoesNotMatchUnrelatedWindows(string? processName, string? title)
+    {
+        Assert.False(AutoModeHandler.IsOneNoteTitle(processName, title));
     }
 }
